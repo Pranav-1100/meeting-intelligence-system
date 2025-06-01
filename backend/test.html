@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firebase Auth Token Generator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            padding: 40px;
+            width: 100%;
+            max-width: 500px;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            color: #2d3748;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            color: #718096;
+            font-size: 16px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #2d3748;
+            font-weight: 600;
+        }
+        
+        input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e2e8f0;
+            border-radius: 10px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+        
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        
+        button {
+            flex: 1;
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-login {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-login:hover {
+            background: #5a67d8;
+            transform: translateY(-2px);
+        }
+        
+        .btn-signup {
+            background: #48bb78;
+            color: white;
+        }
+        
+        .btn-signup:hover {
+            background: #38a169;
+            transform: translateY(-2px);
+        }
+        
+        .btn-logout {
+            background: #f56565;
+            color: white;
+            width: 100%;
+        }
+        
+        .btn-logout:hover {
+            background: #e53e3e;
+        }
+        
+        .token-section {
+            background: #f7fafc;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+        
+        .token-label {
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 10px;
+        }
+        
+        .token-display {
+            background: #2d3748;
+            color: #e2e8f0;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 12px;
+            word-break: break-all;
+            line-height: 1.4;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .copy-btn {
+            background: #4299e1;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: background 0.3s ease;
+        }
+        
+        .copy-btn:hover {
+            background: #3182ce;
+        }
+        
+        .user-info {
+            background: #e6fffa;
+            border: 1px solid #81e6d9;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .user-info h3 {
+            color: #234e52;
+            margin-bottom: 10px;
+        }
+        
+        .user-info p {
+            color: #285e61;
+            margin: 5px 0;
+        }
+        
+        .error {
+            background: #fed7d7;
+            border: 1px solid #feb2b2;
+            color: #c53030;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+        }
+        
+        .success {
+            background: #c6f6d5;
+            border: 1px solid #9ae6b4;
+            color: #276749;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .config-section {
+            background: #fff5f5;
+            border: 1px solid #fed7d7;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .config-section h3 {
+            color: #c53030;
+            margin-bottom: 15px;
+        }
+        
+        .config-section code {
+            background: #2d3748;
+            color: #e2e8f0;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔐 Firebase Auth Token Generator</h1>
+            <p>Generate JWT tokens for Meeting Intelligence API testing</p>
+        </div>
+
+        <!-- Firebase Configuration Notice -->
+        <div class="config-section">
+            <h3>⚠️ Setup Required</h3>
+            <p><strong>Before using this page:</strong></p>
+            <ol style="margin-left: 20px; margin-top: 10px;">
+                <li>Replace <code>firebaseConfig</code> below with your Firebase project config</li>
+                <li>Enable Email/Password authentication in Firebase Console</li>
+                <li>Add your domain to Firebase authorized domains</li>
+            </ol>
+        </div>
+
+        <!-- User Info (shown when logged in) -->
+        <div id="userInfo" class="user-info" style="display: none;">
+            <h3>👤 Logged In User</h3>
+            <p><strong>Email:</strong> <span id="userEmail"></span></p>
+            <p><strong>UID:</strong> <span id="userUID"></span></p>
+            <p><strong>Provider:</strong> <span id="userProvider"></span></p>
+        </div>
+
+        <!-- Auth Form -->
+        <div id="authForm">
+            <div class="form-group">
+                <label for="email">Email Address</label>
+                <input type="email" id="email" placeholder="Enter your email" value="test@example.com">
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" placeholder="Enter your password" value="password123">
+            </div>
+
+            <div class="button-group">
+                <button class="btn-login" onclick="signIn()">
+                    <span id="loginLoader" class="loading" style="display: none;"></span>
+                    Sign In
+                </button>
+                <button class="btn-signup" onclick="signUp()">
+                    <span id="signupLoader" class="loading" style="display: none;"></span>
+                    Sign Up
+                </button>
+            </div>
+        </div>
+
+        <!-- Logout Button (shown when logged in) -->
+        <div id="logoutSection" style="display: none;">
+            <button class="btn-logout" onclick="signOut()">Sign Out</button>
+        </div>
+
+        <!-- Token Display -->
+        <div id="tokenSection" class="token-section" style="display: none;">
+            <div class="token-label">🎯 Firebase ID Token (Copy for Postman)</div>
+            <div class="token-display" id="tokenDisplay"></div>
+            <button class="copy-btn" onclick="copyToken()">📋 Copy Token</button>
+            <button class="copy-btn" onclick="refreshToken()" style="margin-left: 10px;">🔄 Refresh Token</button>
+        </div>
+
+        <!-- Messages -->
+        <div id="message"></div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { 
+            getAuth, 
+            signInWithEmailAndPassword, 
+            createUserWithEmailAndPassword,
+            signOut as firebaseSignOut,
+            onAuthStateChanged 
+        } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+
+        // 🔥 REPLACE WITH YOUR FIREBASE CONFIG FROM CONSOLE
+        const firebaseConfig = {
+            apiKey: "AIzaSyCXwWdXQvY01_kycHrGCZNwYs-Hz2tHBv0",
+            authDomain: "meeting-intelligence-94bfb.firebaseapp.com",
+            projectId: "meeting-intelligence-94bfb",
+            storageBucket: "meeting-intelligence-94bfb.firebasestorage.app",
+            messagingSenderId: "876426834587",
+            appId: "1:876426834587:web:93d29706f351aceb53cc3e",
+            measurementId: "G-X6120NH7BV"
+          };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+
+        // Global variables
+        window.auth = auth;
+        window.currentUser = null;
+
+        // Auth state listener
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                window.currentUser = user;
+                showUserInfo(user);
+                getAndDisplayToken(user);
+            } else {
+                window.currentUser = null;
+                hideUserInfo();
+            }
+        });
+
+        // Sign In Function
+        window.signIn = async () => {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            
+            if (!email || !password) {
+                showMessage('Please enter both email and password', 'error');
+                return;
+            }
+
+            showLoading('loginLoader', true);
+            
+            try {
+                const userCredential = await signInWithEmailAndPassword(auth, email, password);
+                showMessage('✅ Successfully signed in!', 'success');
+            } catch (error) {
+                console.error('Sign in error:', error);
+                showMessage(`❌ Sign in failed: ${error.message}`, 'error');
+            } finally {
+                showLoading('loginLoader', false);
+            }
+        };
+
+        // Sign Up Function
+        window.signUp = async () => {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            
+            if (!email || !password) {
+                showMessage('Please enter both email and password', 'error');
+                return;
+            }
+
+            if (password.length < 6) {
+                showMessage('Password must be at least 6 characters', 'error');
+                return;
+            }
+
+            showLoading('signupLoader', true);
+            
+            try {
+                const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                showMessage('✅ Account created successfully!', 'success');
+            } catch (error) {
+                console.error('Sign up error:', error);
+                showMessage(`❌ Sign up failed: ${error.message}`, 'error');
+            } finally {
+                showLoading('signupLoader', false);
+            }
+        };
+
+        // Sign Out Function
+        window.signOut = async () => {
+            try {
+                await firebaseSignOut(auth);
+                showMessage('✅ Successfully signed out!', 'success');
+            } catch (error) {
+                console.error('Sign out error:', error);
+                showMessage(`❌ Sign out failed: ${error.message}`, 'error');
+            }
+        };
+
+        // Get and Display Token
+        async function getAndDisplayToken(user) {
+            try {
+                const token = await user.getIdToken();
+                document.getElementById('tokenDisplay').textContent = token;
+                document.getElementById('tokenSection').style.display = 'block';
+            } catch (error) {
+                console.error('Error getting token:', error);
+                showMessage(`❌ Error getting token: ${error.message}`, 'error');
+            }
+        }
+
+        // Refresh Token
+        window.refreshToken = async () => {
+            if (window.currentUser) {
+                try {
+                    const token = await window.currentUser.getIdToken(true); // Force refresh
+                    document.getElementById('tokenDisplay').textContent = token;
+                    showMessage('✅ Token refreshed!', 'success');
+                } catch (error) {
+                    console.error('Error refreshing token:', error);
+                    showMessage(`❌ Error refreshing token: ${error.message}`, 'error');
+                }
+            }
+        };
+
+        // Copy Token to Clipboard
+        window.copyToken = async () => {
+            const tokenText = document.getElementById('tokenDisplay').textContent;
+            try {
+                await navigator.clipboard.writeText(tokenText);
+                showMessage('✅ Token copied to clipboard!', 'success');
+            } catch (error) {
+                // Fallback for older browsers
+                const textArea = document.createElement('textarea');
+                textArea.value = tokenText;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                showMessage('✅ Token copied to clipboard!', 'success');
+            }
+        };
+
+        // Show User Info
+        function showUserInfo(user) {
+            document.getElementById('userEmail').textContent = user.email;
+            document.getElementById('userUID').textContent = user.uid;
+            document.getElementById('userProvider').textContent = user.providerData[0]?.providerId || 'email';
+            document.getElementById('userInfo').style.display = 'block';
+            document.getElementById('authForm').style.display = 'none';
+            document.getElementById('logoutSection').style.display = 'block';
+        }
+
+        // Hide User Info
+        function hideUserInfo() {
+            document.getElementById('userInfo').style.display = 'none';
+            document.getElementById('authForm').style.display = 'block';
+            document.getElementById('logoutSection').style.display = 'none';
+            document.getElementById('tokenSection').style.display = 'none';
+        }
+
+        // Show Loading
+        function showLoading(elementId, show) {
+            document.getElementById(elementId).style.display = show ? 'inline-block' : 'none';
+        }
+
+        // Show Message
+        function showMessage(message, type) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.innerHTML = `<div class="${type}">${message}</div>`;
+            setTimeout(() => {
+                messageDiv.innerHTML = '';
+            }, 5000);
+        }
+
+        // Handle Enter key
+        document.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                signIn();
+            }
+        });
+    </script>
+</body>
+</html>

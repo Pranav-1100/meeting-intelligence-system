@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Upload Audio File</title>
+</head>
+<body>
+  <h2>Upload Meeting Audio</h2>
+  <form id="uploadForm">
+    <label for="title">Meeting Title:</label><br>
+    <input type="text" id="title" name="title" value="Test Meeting"><br><br>
+
+    <label for="audio">Choose Audio File:</label><br>
+    <input type="file" id="audio" name="audio" accept="audio/*"><br><br>
+
+    <label>
+      <input type="checkbox" id="auto_process" name="auto_process" checked>
+      Auto Process
+    </label><br><br>
+
+    <button type="submit">Upload</button>
+  </form>
+
+  <p id="response"></p>
+
+  <script>
+    const form = document.getElementById('uploadForm');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const formData = new FormData();
+      const audioFile = document.getElementById('audio').files[0];
+      const title = document.getElementById('title').value;
+      const autoProcess = document.getElementById('auto_process').checked;
+
+      formData.append('audio', audioFile);
+      formData.append('title', title);
+      formData.append('auto_process', autoProcess);
+
+      try {
+        const response = await fetch('http://localhost:8000/api/meetings/upload', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer YOUR_TOKEN_HERE' // 🔁 Replace this with your actual token
+          },
+          body: formData
+        });
+
+        const result = await response.json();
+        document.getElementById('response').innerText = JSON.stringify(result, null, 2);
+      } catch (error) {
+        document.getElementById('response').innerText = 'Upload failed: ' + error;
+      }
+    });
+  </script>
+</body>
+</html>
