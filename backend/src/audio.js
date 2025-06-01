@@ -1,10 +1,5 @@
 const fs = require('fs');
 const path = require('path');
-const ffmpeg = require('fluent-ffmpeg');
-const ffmpegStatic = require('ffmpeg-static');
-
-// Set FFmpeg path
-ffmpeg.setFfmpegPath(ffmpegStatic);
 
 class AudioUtils {
   constructor() {
@@ -50,9 +45,49 @@ class AudioUtils {
   }
 
   /**
-   * Get audio file metadata
+   * Get audio file metadata (fallback version without ffprobe)
    */
   async getAudioMetadata(filePath) {
+    try {
+      // First try with ffprobe if available
+      if (this.isFFmpegAvailable()) {
+        return await this.getAudioMetadataWithFFprobe(filePath);
+      } else {
+        // Fallback: estimate metadata from file
+        return await this.getAudioMetadataFallback(filePath);
+      }
+    } catch (error) {
+      console.warn('Failed to get audio metadata:', error.message);
+      // Return fallback metadata
+      return await this.getAudioMetadataFallback(filePath);
+    }
+  }
+
+  /**
+   * Check if FFmpeg is available
+   */
+  isFFmpegAvailable() {
+    try {
+      const { execSync } = require('child_process');
+      execSync('ffprobe -version', { stdio: 'ignore' });
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
+   * Get metadata using ffprobe (when available)
+   */
+  async getAudioMetadataWithFFprobe(filePath) {
+    const ffmpeg = require('fluent-ffmpeg');
+    const ffmpegStatic = require('ffmpeg-static');
+    
+    // Set FFmpeg path if available
+    if (ffmpegStatic) {
+      ffmpeg.setFfmpegPath(ffmpegStatic);
+    }
+
     return new Promise((resolve, reject) => {
       ffmpeg.ffprobe(filePath, (err, metadata) => {
         if (err) {
@@ -90,190 +125,114 @@ class AudioUtils {
   }
 
   /**
-   * Convert audio to optimal format for processing
+   * Fallback metadata extraction (estimates based on file info)
    */
-  async convertToOptimalFormat(inputPath, outputPath = null) {
-    if (!outputPath) {
-      const ext = path.extname(inputPath);
-      outputPath = inputPath.replace(ext, '_converted.wav');
-    }
+  async getAudioMetadataFallback(filePath) {
+    const stats = fs.statSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    
+    // Rough estimates based on common audio formats
+    const bitrateEstimates = {
+      '.mp3': 128000,  // 128 kbps
+      '.wav': 1411200, // 44.1kHz 16-bit stereo
+      '.m4a': 128000,  // 128 kbps
+      '.mp4': 128000,  // 128 kbps
+      '.ogg': 128000,  // 128 kbps
+      '.flac': 1000000 // ~1 Mbps
+    };
 
-    return new Promise((resolve, reject) => {
-      ffmpeg(inputPath)
-        .audioChannels(1) // Mono for better speech recognition
-        .audioFrequency(16000) // 16kHz sample rate
-        .audioCodec('pcm_s16le') // 16-bit PCM
-        .format('wav')
-        .on('end', () => {
-          resolve(outputPath);
-        })
-        .on('error', (err) => {
-          reject(new Error(`Audio conversion failed: ${err.message}`));
-        })
-        .save(outputPath);
-    });
-  }
+    const estimatedBitrate = bitrateEstimates[ext] || 128000;
+    const estimatedDuration = Math.max(10, (stats.size * 8) / estimatedBitrate); // Minimum 10 seconds
 
-  /**
-   * Split audio into chunks for processing
-   */
-  async splitAudioIntoChunks(inputPath, chunkDurationSeconds = 90, outputDir = null) {
-    if (!outputDir) {
-      outputDir = path.join(path.dirname(inputPath), 'chunks');
-    }
-
-    // Ensure output directory exists
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-
-    // Get audio metadata first
-    const metadata = await this.getAudioMetadata(inputPath);
-    const totalDuration = metadata.duration;
-    const numberOfChunks = Math.ceil(totalDuration / chunkDurationSeconds);
-
-    const chunks = [];
-
-    for (let i = 0; i < numberOfChunks; i++) {
-      const startTime = i * chunkDurationSeconds;
-      const outputFile = path.join(outputDir, `chunk_${i.toString().padStart(3, '0')}.wav`);
-
-      await new Promise((resolve, reject) => {
-        ffmpeg(inputPath)
-          .seekInput(startTime)
-          .duration(chunkDurationSeconds)
-          .audioChannels(1)
-          .audioFrequency(16000)
-          .audioCodec('pcm_s16le')
-          .format('wav')
-          .on('end', resolve)
-          .on('error', reject)
-          .save(outputFile);
-      });
-
-      chunks.push({
-        index: i,
-        filePath: outputFile,
-        startTime: startTime,
-        endTime: Math.min(startTime + chunkDurationSeconds, totalDuration),
-        duration: Math.min(chunkDurationSeconds, totalDuration - startTime)
-      });
-    }
+    console.log(`📊 Using fallback metadata estimation for ${ext} file`);
 
     return {
-      chunks,
-      totalChunks: numberOfChunks,
-      totalDuration,
-      outputDir
+      duration: estimatedDuration,
+      bitrate: estimatedBitrate,
+      size: stats.size,
+      format: ext.substring(1), // Remove the dot
+      codec: 'unknown',
+      sampleRate: 44100, // Common sample rate
+      channels: 2, // Assume stereo
+      channelLayout: 'stereo',
+      _estimated: true // Flag to indicate this is estimated
     };
   }
 
   /**
-   * Normalize audio volume
+   * Estimate processing time based on file duration
    */
-  async normalizeAudio(inputPath, outputPath = null) {
-    if (!outputPath) {
-      const ext = path.extname(inputPath);
-      outputPath = inputPath.replace(ext, '_normalized' + ext);
-    }
+  estimateProcessingTime(durationSeconds) {
+    // Rough estimates based on typical processing speeds
+    const transcriptionTime = durationSeconds * 0.3; // ~30% of audio duration
+    const diarizationTime = durationSeconds * 0.5;   // ~50% of audio duration
+    const analysisTime = 30;                         // ~30 seconds for analysis
 
-    return new Promise((resolve, reject) => {
-      ffmpeg(inputPath)
-        .audioFilters('loudnorm')
-        .on('end', () => resolve(outputPath))
-        .on('error', reject)
-        .save(outputPath);
-    });
+    return {
+      transcription: Math.ceil(transcriptionTime),
+      diarization: Math.ceil(diarizationTime),
+      analysis: analysisTime,
+      total: Math.ceil(transcriptionTime + diarizationTime + analysisTime)
+    };
   }
 
   /**
-   * Remove noise from audio
+   * Calculate approximate API costs
    */
-  async removeNoise(inputPath, outputPath = null) {
-    if (!outputPath) {
-      const ext = path.extname(inputPath);
-      outputPath = inputPath.replace(ext, '_denoised' + ext);
-    }
+  calculateEstimatedCosts(durationMinutes) {
+    const whisperCost = durationMinutes * 0.006; // $0.006 per minute
+    const assemblyAICost = (durationMinutes / 60) * 0.37; // $0.37 per hour
+    const gptAnalysisCost = 0.15; // Rough estimate for analysis
 
-    return new Promise((resolve, reject) => {
-      ffmpeg(inputPath)
-        .audioFilters([
-          'highpass=f=200', // Remove low frequency noise
-          'lowpass=f=3000'   // Remove high frequency noise
-        ])
-        .on('end', () => resolve(outputPath))
-        .on('error', reject)
-        .save(outputPath);
-    });
+    return {
+      whisper: Number(whisperCost.toFixed(4)),
+      assemblyai: Number(assemblyAICost.toFixed(4)),
+      analysis: gptAnalysisCost,
+      total: Number((whisperCost + assemblyAICost + gptAnalysisCost).toFixed(4))
+    };
   }
 
   /**
-   * Merge audio chunks back together
+   * Get supported audio formats
    */
-  async mergeAudioChunks(chunkPaths, outputPath) {
-    return new Promise((resolve, reject) => {
-      let command = ffmpeg();
-
-      // Add all chunk files as inputs
-      chunkPaths.forEach(chunkPath => {
-        command = command.addInput(chunkPath);
-      });
-
-      command
-        .on('end', () => resolve(outputPath))
-        .on('error', reject)
-        .mergeToFile(outputPath);
-    });
+  getSupportedFormats() {
+    return [...this.supportedFormats];
   }
 
   /**
-   * Extract audio from video file
+   * Check if file format is supported
    */
-  async extractAudioFromVideo(videoPath, audioPath = null) {
-    if (!audioPath) {
-      const videoExt = path.extname(videoPath);
-      audioPath = videoPath.replace(videoExt, '.wav');
-    }
-
-    return new Promise((resolve, reject) => {
-      ffmpeg(videoPath)
-        .noVideo()
-        .audioChannels(1)
-        .audioFrequency(16000)
-        .audioCodec('pcm_s16le')
-        .format('wav')
-        .on('end', () => resolve(audioPath))
-        .on('error', reject)
-        .save(audioPath);
-    });
+  isFormatSupported(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    return this.supportedFormats.includes(ext);
   }
 
   /**
-   * Calculate audio fingerprint for duplicate detection
+   * Validate meeting duration
    */
-  async generateAudioFingerprint(filePath) {
-    try {
-      const metadata = await this.getAudioMetadata(filePath);
-      const stats = fs.statSync(filePath);
-      
-      // Simple fingerprint based on file characteristics
-      const fingerprint = {
-        duration: Math.round(metadata.duration),
-        size: stats.size,
-        sampleRate: metadata.sampleRate,
-        channels: metadata.channels,
-        // Hash of first and last 1000 bytes
-        contentHash: this.generateContentHash(filePath)
+  validateMeetingDuration(duration) {
+    const minDuration = 10; // 10 seconds
+    const maxDuration = 4 * 60 * 60; // 4 hours
+
+    if (duration < minDuration) {
+      return {
+        isValid: false,
+        error: `Meeting too short: ${duration}s. Minimum: ${minDuration}s`
       };
-
-      return JSON.stringify(fingerprint);
-    } catch (error) {
-      throw new Error(`Failed to generate audio fingerprint: ${error.message}`);
     }
+
+    if (duration > maxDuration) {
+      return {
+        isValid: false,
+        error: `Meeting too long: ${Math.round(duration / 60)}min. Maximum: ${Math.round(maxDuration / 60)}min`
+      };
+    }
+
+    return { isValid: true };
   }
 
   /**
-   * Generate content hash for file
+   * Generate content hash for file (for duplicate detection)
    */
   generateContentHash(filePath) {
     const crypto = require('crypto');
@@ -322,51 +281,41 @@ class AudioUtils {
   }
 
   /**
-   * Get supported audio formats
+   * Simple audio conversion (requires ffmpeg)
    */
-  getSupportedFormats() {
-    return [...this.supportedFormats];
-  }
+  async convertToOptimalFormat(inputPath, outputPath = null) {
+    if (!this.isFFmpegAvailable()) {
+      console.warn('FFmpeg not available, skipping audio conversion');
+      return inputPath; // Return original file
+    }
 
-  /**
-   * Check if file format is supported
-   */
-  isFormatSupported(filePath) {
-    const ext = path.extname(filePath).toLowerCase();
-    return this.supportedFormats.includes(ext);
-  }
+    const ffmpeg = require('fluent-ffmpeg');
+    const ffmpegStatic = require('ffmpeg-static');
+    
+    if (ffmpegStatic) {
+      ffmpeg.setFfmpegPath(ffmpegStatic);
+    }
 
-  /**
-   * Estimate processing time based on file duration
-   */
-  estimateProcessingTime(durationSeconds) {
-    // Rough estimates based on typical processing speeds
-    const transcriptionTime = durationSeconds * 0.3; // ~30% of audio duration
-    const diarizationTime = durationSeconds * 0.5;   // ~50% of audio duration
-    const analysisTime = 30;                         // ~30 seconds for analysis
+    if (!outputPath) {
+      const ext = path.extname(inputPath);
+      outputPath = inputPath.replace(ext, '_converted.wav');
+    }
 
-    return {
-      transcription: Math.ceil(transcriptionTime),
-      diarization: Math.ceil(diarizationTime),
-      analysis: analysisTime,
-      total: Math.ceil(transcriptionTime + diarizationTime + analysisTime)
-    };
-  }
-
-  /**
-   * Calculate approximate API costs
-   */
-  calculateEstimatedCosts(durationMinutes) {
-    const whisperCost = durationMinutes * 0.006; // $0.006 per minute
-    const assemblyAICost = (durationMinutes / 60) * 0.37; // $0.37 per hour
-    const gptAnalysisCost = 0.15; // Rough estimate for analysis
-
-    return {
-      whisper: Number(whisperCost.toFixed(4)),
-      assemblyai: Number(assemblyAICost.toFixed(4)),
-      analysis: gptAnalysisCost,
-      total: Number((whisperCost + assemblyAICost + gptAnalysisCost).toFixed(4))
-    };
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .audioChannels(1) // Mono for better speech recognition
+        .audioFrequency(16000) // 16kHz sample rate
+        .audioCodec('pcm_s16le') // 16-bit PCM
+        .format('wav')
+        .on('end', () => {
+          resolve(outputPath);
+        })
+        .on('error', (err) => {
+          console.error('Audio conversion failed:', err.message);
+          resolve(inputPath); // Return original file if conversion fails
+        })
+        .save(outputPath);
+    });
   }
 }
 

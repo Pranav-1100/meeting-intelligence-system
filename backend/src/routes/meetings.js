@@ -426,32 +426,294 @@ router.delete('/:id', asyncHandler(async (req, res) => {
 }));
 
 /**
+ * Enhanced debug endpoint for AssemblyAI testing
+ * Add this to your routes/meetings.js
+ */
+
+router.post('/:id/debug-assemblyai', asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
+  const db = getDb();
+  const meeting = db.prepare(`
+    SELECT * FROM meetings WHERE id = ? AND user_id = ?
+  `).get(id, userId);
+
+  if (!meeting) {
+    throw new NotFoundError('Meeting');
+  }
+
+  try {
+    console.log('🔧 DEBUG: Starting comprehensive AssemblyAI test...');
+    
+    // Check environment
+    const envCheck = {
+      assemblyai_key_present: !!process.env.ASSEMBLYAI_API_KEY,
+      assemblyai_key_length: process.env.ASSEMBLYAI_API_KEY?.length || 0,
+      assemblyai_key_preview: process.env.ASSEMBLYAI_API_KEY ? 
+        process.env.ASSEMBLYAI_API_KEY.substring(0, 8) + '...' + process.env.ASSEMBLYAI_API_KEY.substring(process.env.ASSEMBLYAI_API_KEY.length - 4) : 
+        'not set',
+      audio_file_exists: meeting.audio_file_path ? fs.existsSync(meeting.audio_file_path) : false,
+      audio_file_size: meeting.audio_file_path && fs.existsSync(meeting.audio_file_path) ? 
+        fs.statSync(meeting.audio_file_path).size : 0
+    };
+
+    console.log('🔧 DEBUG: Environment check:', envCheck);
+
+    let results = {
+      environment_check: envCheck,
+      api_key_test: null,
+      upload_test: null,
+      transcription_test: null,
+      audio_file_test: null
+    };
+
+    // Test 1: API Key Authentication
+    if (envCheck.assemblyai_key_present) {
+      console.log('🔧 DEBUG: Testing API key authentication...');
+      try {
+        const axios = require('axios');
+        const response = await axios.get('https://api.assemblyai.com/v2/transcript', {
+          headers: {
+            'authorization': process.env.ASSEMBLYAI_API_KEY
+          }
+        });
+        
+        results.api_key_test = {
+          success: true,
+          status: response.status,
+          transcripts_count: response.data.transcripts?.length || 0
+        };
+        console.log('✅ API key test passed');
+      } catch (error) {
+        results.api_key_test = {
+          success: false,
+          status: error.response?.status,
+          error: error.response?.data?.error || error.message
+        };
+        console.log('❌ API key test failed:', error.message);
+      }
+    }
+
+    // Test 2: File Upload Test
+    if (results.api_key_test?.success) {
+      console.log('🔧 DEBUG: Testing file upload...');
+      try {
+        const axios = require('axios');
+        const testData = Buffer.alloc(1024, 0); // 1KB test file
+        
+        const uploadResponse = await axios.post('https://api.assemblyai.com/v2/upload', testData, {
+          headers: {
+            'authorization': process.env.ASSEMBLYAI_API_KEY,
+            'content-type': 'application/octet-stream'
+          }
+        });
+        
+        results.upload_test = {
+          success: true,
+          status: uploadResponse.status,
+          upload_url_received: !!uploadResponse.data.upload_url
+        };
+        console.log('✅ Upload test passed');
+
+        // Test 3: Transcription Request
+        if (uploadResponse.data.upload_url) {
+          console.log('🔧 DEBUG: Testing transcription request...');
+          try {
+            const transcriptResponse = await axios.post('https://api.assemblyai.com/v2/transcript', {
+              audio_url: uploadResponse.data.upload_url,
+              speaker_labels: true,
+              speakers_expected: 2
+            }, {
+              headers: {
+                'authorization': process.env.ASSEMBLYAI_API_KEY,
+                'content-type': 'application/json'
+              }
+            });
+            
+            results.transcription_test = {
+              success: true,
+              status: transcriptResponse.status,
+              transcript_id: transcriptResponse.data.id,
+              initial_status: transcriptResponse.data.status
+            };
+            console.log('✅ Transcription request test passed');
+          } catch (error) {
+            results.transcription_test = {
+              success: false,
+              status: error.response?.status,
+              error: error.response?.data?.error || error.message
+            };
+            console.log('❌ Transcription request test failed:', error.message);
+          }
+        }
+      } catch (error) {
+        results.upload_test = {
+          success: false,
+          status: error.response?.status,
+          error: error.response?.data?.error || error.message
+        };
+        console.log('❌ Upload test failed:', error.message);
+      }
+    }
+
+    // Test 4: Audio File Test
+    if (meeting.audio_file_path && fs.existsSync(meeting.audio_file_path)) {
+      console.log('🔧 DEBUG: Testing actual audio file...');
+      try {
+        const audioData = fs.readFileSync(meeting.audio_file_path);
+        
+        results.audio_file_test = {
+          exists: true,
+          readable: true,
+          size: audioData.length,
+          size_mb: Math.round(audioData.length / 1024 / 1024 * 100) / 100
+        };
+
+        // Try uploading the actual audio file if previous tests passed
+        if (results.upload_test?.success) {
+          console.log('🔧 DEBUG: Testing upload of actual audio file...');
+          try {
+            const axios = require('axios');
+            const uploadResponse = await axios.post('https://api.assemblyai.com/v2/upload', audioData, {
+              headers: {
+                'authorization': process.env.ASSEMBLYAI_API_KEY,
+                'content-type': 'application/octet-stream'
+              },
+              maxContentLength: Infinity,
+              maxBodyLength: Infinity
+            });
+            
+            results.audio_file_test.upload_success = true;
+            results.audio_file_test.upload_url = !!uploadResponse.data.upload_url;
+            console.log('✅ Actual audio file upload test passed');
+          } catch (error) {
+            results.audio_file_test.upload_success = false;
+            results.audio_file_test.upload_error = error.response?.data?.error || error.message;
+            console.log('❌ Actual audio file upload test failed:', error.message);
+          }
+        }
+
+      } catch (error) {
+        results.audio_file_test = {
+          exists: true,
+          readable: false,
+          error: error.message
+        };
+        console.log('❌ Audio file read test failed:', error.message);
+      }
+    } else {
+      results.audio_file_test = {
+        exists: false,
+        path: meeting.audio_file_path
+      };
+    }
+
+    // Generate recommendations
+    const recommendations = [];
+    if (!envCheck.assemblyai_key_present) {
+      recommendations.push('❌ Set ASSEMBLYAI_API_KEY in your .env file');
+    } else if (!results.api_key_test?.success) {
+      recommendations.push('❌ Get a valid AssemblyAI API key from https://www.assemblyai.com/dashboard');
+    } else if (!results.upload_test?.success) {
+      recommendations.push('❌ AssemblyAI upload is failing - check API key permissions');
+    } else if (!results.audio_file_test?.exists) {
+      recommendations.push('❌ Audio file is missing - check file path');
+    } else if (!results.audio_file_test?.readable) {
+      recommendations.push('❌ Audio file cannot be read - check file permissions');
+    } else if (results.audio_file_test?.upload_success === false) {
+      recommendations.push('❌ Audio file upload failed - file might be corrupted or too large');
+    } else {
+      recommendations.push('✅ All tests passed! AssemblyAI should work correctly');
+    }
+
+    res.json({
+      message: 'Comprehensive AssemblyAI debug completed',
+      meeting_id: id,
+      ...results,
+      recommendations,
+      next_steps: results.api_key_test?.success && results.upload_test?.success ? [
+        'Try processing the meeting again with: POST /api/meetings/' + id + '/process',
+        'Check real-time logs during processing for detailed error messages'
+      ] : [
+        'Fix the failed tests above before attempting to process audio',
+        'Get a new AssemblyAI API key if authentication failed'
+      ]
+    });
+
+  } catch (error) {
+    console.error('Debug endpoint error:', error);
+    res.status(500).json({
+      error: 'Debug failed',
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+}));
+
+/**
  * Async function to process audio file
  */
+/**
+ * Enhanced processAudioFile function with better diarization handling
+ * Replace the existing processAudioFile function in your meetings.js
+ */
+
+/**
+ * Updated processAudioFile function - AssemblyAI ONLY
+ * Replace your existing processAudioFile function in meetings.js with this
+ */
+
 async function processAudioFile(meetingId, audioFilePath, userId) {
   const db = getDb();
 
   try {
-    console.log(`🎵 Starting audio processing for meeting: ${meetingId}`);
+    console.log(`🎵 Starting AssemblyAI-only audio processing for meeting: ${meetingId}`);
+    console.log(`📁 Audio file path: ${audioFilePath}`);
+
+    // Check if audio file exists
+    if (!fs.existsSync(audioFilePath)) {
+      throw new Error(`Audio file not found: ${audioFilePath}`);
+    }
+
+    // Get file stats
+    const fileStats = fs.statSync(audioFilePath);
+    console.log(`📊 File size: ${Math.round(fileStats.size / 1024 / 1024)}MB`);
 
     // Update progress
     db.prepare(
       'UPDATE meetings SET processing_progress = ? WHERE id = ?'
     ).run(10, meetingId);
 
-    // Step 1: Transcription with OpenAI Whisper
-    console.log('📝 Starting transcription...');
-    const transcriptionResult = await openaiService.transcribeAudio(audioFilePath, {
-      language: 'en'
+    // Step 1: Complete transcription + diarization with AssemblyAI
+    console.log('🎤 Starting AssemblyAI transcription with speaker diarization...');
+    const transcriptionResult = await assemblyaiService.transcribeWithDiarization(audioFilePath, {
+      minSpeakers: 1,
+      maxSpeakers: 6,
+      language: 'en',
+      enableAutoHighlights: false, // Keep costs down
+      enableSentimentAnalysis: false // Keep costs down
+    });
+
+    console.log(`✅ AssemblyAI transcription completed:`, {
+      duration: transcriptionResult.duration,
+      wordCount: transcriptionResult.wordCount,
+      language: transcriptionResult.language,
+      speakersFound: transcriptionResult.speakers?.length || 0,
+      utterancesFound: transcriptionResult.utterances?.length || 0
     });
 
     // Update progress
     db.prepare(
       'UPDATE meetings SET processing_progress = ?, audio_duration = ? WHERE id = ?'
-    ).run(40, transcriptionResult.duration, meetingId);
+    ).run(60, transcriptionResult.duration, meetingId);
 
-    // Store transcript
+    // Step 2: Store transcript
     const transcriptId = uuidv4();
+    const avgConfidence = transcriptionResult.words && transcriptionResult.words.length > 0 
+      ? transcriptionResult.words.reduce((acc, w) => acc + (w.confidence || 0), 0) / transcriptionResult.words.length
+      : transcriptionResult.confidence || 0;
+
     db.prepare(`
       INSERT INTO transcripts (
         id, meeting_id, content, language, confidence_score, 
@@ -462,63 +724,106 @@ async function processAudioFile(meetingId, audioFilePath, userId) {
       meetingId,
       transcriptionResult.text,
       transcriptionResult.language,
-      transcriptionResult.words.reduce((acc, w) => acc + (w.confidence || 0), 0) / transcriptionResult.words.length,
+      avgConfidence,
       transcriptionResult.wordCount,
       transcriptionResult.processingTime,
       transcriptionResult.model
     );
 
-    // Step 2: Speaker Diarization with AssemblyAI
-    console.log('👥 Starting speaker diarization...');
-    let speakerInfo = [];
-    
-    if (transcriptionResult.duration > 30) { // Only for longer recordings
-      try {
-        const diarizationResult = await assemblyaiService.transcribeWithDiarization(audioFilePath);
-        speakerInfo = diarizationResult.speakers;
+    console.log('💾 Transcript stored successfully');
 
-        // Update progress
-        db.prepare(
-          'UPDATE meetings SET processing_progress = ? WHERE id = ?'
-        ).run(70, meetingId);
+    // Step 3: Store speakers (from AssemblyAI diarization)
+    const speakerInfo = transcriptionResult.speakers || [];
+    if (speakerInfo.length > 0) {
+      console.log(`💾 Storing ${speakerInfo.length} speakers in database...`);
+      
+      const speakerStmt = db.prepare(`
+        INSERT INTO speakers (
+          id, meeting_id, label, speaking_time, word_count, 
+          confidence_score, voice_profile
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
 
-        // Store speakers
-        const speakerStmt = db.prepare(`
-          INSERT INTO speakers (
-            id, meeting_id, label, speaking_time, word_count, 
-            confidence_score, voice_profile
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        `);
-
-        speakerInfo.forEach(speaker => {
-          speakerStmt.run(
-            uuidv4(),
-            meetingId,
-            speaker.label,
-            speaker.totalSpeakingTime,
-            speaker.totalWords,
-            speaker.averageConfidence,
-            JSON.stringify(speaker.sentiments || {})
-          );
+      speakerInfo.forEach((speaker, index) => {
+        const speakerId = uuidv4();
+        console.log(`👤 Storing speaker: ${speaker.label}`, {
+          speakingTime: speaker.totalSpeakingTime,
+          wordCount: speaker.totalWords,
+          confidence: speaker.averageConfidence
         });
 
-      } catch (error) {
-        console.warn('Speaker diarization failed:', error.message);
-      }
+        speakerStmt.run(
+          speakerId,
+          meetingId,
+          speaker.label,
+          speaker.totalSpeakingTime || 0,
+          speaker.totalWords || 0,
+          speaker.averageConfidence || 0,
+          JSON.stringify({
+            method: 'assemblyai',
+            utteranceCount: speaker.utteranceCount || 0
+          })
+        );
+      });
+
+      console.log('✅ Speaker data stored successfully');
+    } else {
+      console.log('ℹ️ No speakers detected by AssemblyAI');
     }
 
-    // Step 3: Meeting Analysis with GPT-4
-    console.log('🧠 Starting meeting analysis...');
-    const analysisResult = await openaiService.analyzeMeeting(transcriptionResult.text, {
-      analysisType: 'comprehensive',
-      speakerInfo: speakerInfo,
-      meetingContext: { duration: transcriptionResult.duration }
-    });
+    // Step 4: Store transcript segments with speaker labels (from AssemblyAI utterances)
+    if (transcriptionResult.utterances && transcriptionResult.utterances.length > 0) {
+      console.log(`💬 Storing ${transcriptionResult.utterances.length} transcript segments...`);
+      
+      const segmentStmt = db.prepare(`
+        INSERT INTO transcript_segments (
+          id, transcript_id, speaker_id, content, start_time, end_time,
+          confidence_score, segment_index, is_final
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      transcriptionResult.utterances.forEach((utterance, index) => {
+        // Find speaker ID by label
+        const speakerDbRecord = speakerInfo.find(s => s.label === utterance.speaker);
+        const speakerIdFromDb = speakerDbRecord ? db.prepare(
+          'SELECT id FROM speakers WHERE meeting_id = ? AND label = ?'
+        ).get(meetingId, utterance.speaker)?.id : null;
+
+        segmentStmt.run(
+          uuidv4(),
+          transcriptId,
+          speakerIdFromDb,
+          utterance.text,
+          utterance.start,
+          utterance.end,
+          utterance.confidence || 0,
+          index,
+          1
+        );
+      });
+
+      console.log('✅ Transcript segments stored successfully');
+    }
 
     // Update progress
     db.prepare(
       'UPDATE meetings SET processing_progress = ? WHERE id = ?'
-    ).run(90, meetingId);
+    ).run(80, meetingId);
+
+    // Step 5: Meeting Analysis with GPT-4 (using AssemblyAI transcript)
+    console.log('🧠 Starting meeting analysis with GPT-4...');
+    const analysisResult = await openaiService.analyzeMeeting(transcriptionResult.text, {
+      analysisType: 'comprehensive',
+      speakerInfo: speakerInfo,
+      meetingContext: { 
+        duration: transcriptionResult.duration,
+        speakersDetected: speakerInfo.length,
+        method: 'assemblyai-complete',
+        utterances: transcriptionResult.utterances?.length || 0
+      }
+    });
+
+    console.log('✅ Meeting analysis completed');
 
     // Store analysis
     const analysisId = uuidv4();
@@ -536,14 +841,24 @@ async function processAudioFile(meetingId, audioFilePath, userId) {
       JSON.stringify(analysisResult.keyPoints || []),
       JSON.stringify(analysisResult.decisions || []),
       JSON.stringify(analysisResult.topics || []),
-      JSON.stringify(analysisResult.sentiment || {}),
+      JSON.stringify({
+        ...analysisResult.sentiment || {},
+        transcriptionMethod: 'assemblyai'
+      }),
       analysisResult.metadata?.confidence || 0.8,
       analysisResult.metadata?.model,
       analysisResult.metadata?.processingTime
     );
 
-    // Step 4: Extract Action Items
+    // Update progress
+    db.prepare(
+      'UPDATE meetings SET processing_progress = ? WHERE id = ?'
+    ).run(90, meetingId);
+
+    // Step 6: Extract Action Items
     if (analysisResult.actionItems && analysisResult.actionItems.length > 0) {
+      console.log(`🎯 Storing ${analysisResult.actionItems.length} action items...`);
+      
       const actionStmt = db.prepare(`
         INSERT INTO action_items (
           id, meeting_id, title, description, assignee_name, due_date,
@@ -565,6 +880,8 @@ async function processAudioFile(meetingId, audioFilePath, userId) {
           item.extractedFromText
         );
       });
+
+      console.log('✅ Action items stored successfully');
     }
 
     // Mark as completed
@@ -572,10 +889,20 @@ async function processAudioFile(meetingId, audioFilePath, userId) {
       'UPDATE meetings SET processing_status = ?, processing_progress = 100 WHERE id = ?'
     ).run('completed', meetingId);
 
-    console.log(`✅ Audio processing completed for meeting: ${meetingId}`);
+    console.log(`✅ AssemblyAI-only audio processing completed for meeting: ${meetingId}`);
+    console.log(`📊 Final stats:`, {
+      duration: transcriptionResult.duration,
+      speakers: speakerInfo.length,
+      utterances: transcriptionResult.utterances?.length || 0,
+      actionItems: analysisResult.actionItems?.length || 0,
+      method: 'assemblyai-complete'
+    });
 
   } catch (error) {
-    console.error(`❌ Audio processing failed for meeting ${meetingId}:`, error);
+    console.error(`❌ AssemblyAI audio processing failed for meeting ${meetingId}:`, {
+      error: error.message,
+      stack: error.stack
+    });
     
     db.prepare(
       'UPDATE meetings SET processing_status = ?, error_message = ? WHERE id = ?'

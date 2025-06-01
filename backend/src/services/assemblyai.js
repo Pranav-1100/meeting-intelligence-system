@@ -1,4 +1,5 @@
 const { AssemblyAI } = require('assemblyai');
+const axios = require('axios');
 const fs = require('fs');
 const { ServiceUnavailableError, ValidationError } = require('../middleware/errorHandler');
 
@@ -7,22 +8,23 @@ class AssemblyAIService {
     this.client = new AssemblyAI({
       apiKey: process.env.ASSEMBLYAI_API_KEY
     });
+    this.baseUrl = 'https://api.assemblyai.com';
     this.maxRetries = 3;
-    this.retryDelay = 2000; // 2 seconds
-    this.pollInterval = 3000; // 3 seconds
+    this.retryDelay = 2000;
+    this.pollInterval = 3000;
   }
 
   /**
-   * Transcribe audio with speaker diarization
+   * Complete transcription with speaker diarization using AssemblyAI
+   * This replaces both OpenAI transcription AND AssemblyAI diarization
    */
   async transcribeWithDiarization(audioFilePath, options = {}) {
     const {
-      minSpeakers = 2,
+      minSpeakers = 1,
       maxSpeakers = 6,
       language = 'en',
-      enableAutoHighlights = true,
-      enableSummary = true,
-      enableSentimentAnalysis = true
+      enableAutoHighlights = false, // Disabled to avoid extra costs
+      enableSentimentAnalysis = false // Disabled to avoid extra costs
     } = options;
 
     try {
@@ -32,48 +34,52 @@ class AssemblyAIService {
       }
 
       const fileStats = fs.statSync(audioFilePath);
-      console.log(`🎤 Starting AssemblyAI transcription: ${audioFilePath} (${fileStats.size} bytes)`);
+      console.log(`🎤 Starting AssemblyAI transcription with diarization: ${audioFilePath} (${fileStats.size} bytes)`);
 
       const startTime = Date.now();
 
-      // Upload audio file
-      const uploadUrl = await this.uploadAudio(audioFilePath);
+      // Step 1: Upload audio file using axios (more reliable than SDK upload)
+      console.log('📤 Uploading audio file to AssemblyAI...');
+      const uploadUrl = await this.uploadAudioFileWithAxios(audioFilePath);
+      console.log('✅ Audio file uploaded successfully:', uploadUrl);
 
-      // Create transcription request
+      // Step 2: Create transcription request with speaker diarization
       const transcriptConfig = {
         audio_url: uploadUrl,
-        speaker_labels: true,
-        speakers_expected: Math.min(maxSpeakers, Math.max(minSpeakers, 4)),
-        language_code: language,
+        speaker_labels: true, // Enable speaker diarization
+        speakers_expected: Math.min(maxSpeakers, Math.max(minSpeakers, 2)),
         punctuate: true,
         format_text: true,
+        // Only include language if not English (let AssemblyAI auto-detect English)
+        ...(language !== 'en' && { language_code: language }),
+        // Optional features (disabled for cost savings)
         auto_highlights: enableAutoHighlights,
-        summary_model: enableSummary ? 'informative' : undefined,
-        summary_type: enableSummary ? 'bullets' : undefined,
-        sentiment_analysis: enableSentimentAnalysis,
-        entity_detection: true,
-        iab_categories: true,
-        content_safety: true,
-        custom_spelling: [
-          { from: ['Gpt', 'gpt'], to: 'GPT' },
-          { from: ['Ai', 'ai'], to: 'AI' },
-          { from: ['Api', 'api'], to: 'API' },
-          { from: ['Ui', 'ui'], to: 'UI' },
-          { from: ['Ux', 'ux'], to: 'UX' }
-        ]
+        sentiment_analysis: enableSentimentAnalysis
       };
 
-      // Submit transcription
-      const transcript = await this.retryWithBackoff(async () => {
-        return await this.client.transcripts.create(transcriptConfig);
+      console.log('🔄 Submitting transcription request with config:', {
+        speaker_labels: transcriptConfig.speaker_labels,
+        speakers_expected: transcriptConfig.speakers_expected,
+        language_code: transcriptConfig.language_code || 'auto-detect'
       });
 
-      // Poll for completion
+      // Step 3: Submit transcription using axios
+      const transcript = await this.createTranscriptWithAxios(transcriptConfig);
+      console.log('✅ Transcription submitted, ID:', transcript.id);
+
+      // Step 4: Poll for completion
       const completedTranscript = await this.pollTranscriptionStatus(transcript.id);
 
       const processingTime = (Date.now() - startTime) / 1000;
 
       console.log(`✅ AssemblyAI transcription completed in ${processingTime}s`);
+      console.log('📊 Transcript stats:', {
+        status: completedTranscript.status,
+        confidence: completedTranscript.confidence,
+        audio_duration: completedTranscript.audio_duration,
+        utterances_count: completedTranscript.utterances?.length || 0,
+        text_length: completedTranscript.text?.length || 0
+      });
 
       return this.formatTranscriptionResult(completedTranscript, processingTime);
 
@@ -88,68 +94,91 @@ class AssemblyAIService {
         throw new ServiceUnavailableError('AssemblyAI service temporarily unavailable');
       }
 
+      // Enhanced error logging
+      if (error.response) {
+        console.error('AssemblyAI API Error Details:', {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data
+        });
+      }
+
       throw error;
     }
   }
 
   /**
-   * Real-time transcription with speaker diarization
+   * Upload audio file using axios (more reliable than SDK)
    */
-  async startRealtimeTranscription(options = {}) {
-    const {
-      sampleRate = 16000,
-      enableSpeakerLabels = true,
-      onTranscript = () => {},
-      onError = () => {},
-      onClose = () => {}
-    } = options;
-
+  async uploadAudioFileWithAxios(audioFilePath) {
     try {
-      console.log('🔴 Starting real-time transcription with speaker diarization');
-
-      const rt = this.client.realtime.createRealtimeTranscriber({
-        sample_rate: sampleRate,
-        word_boost: ['AI', 'API', 'GPT', 'machine learning', 'artificial intelligence'],
-        speaker_labels: enableSpeakerLabels
-      });
-
-      // Set up event handlers
-      rt.on('transcript', (transcript) => {
-        if (transcript.message_type === 'FinalTranscript') {
-          const formattedTranscript = this.formatRealtimeTranscript(transcript);
-          onTranscript(formattedTranscript);
-        }
-      });
-
-      rt.on('error', onError);
-      rt.on('close', onClose);
-
-      // Connect to AssemblyAI
-      await rt.connect();
-
-      return rt;
-
-    } catch (error) {
-      console.error('Real-time transcription error:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Upload audio file to AssemblyAI
-   */
-  async uploadAudio(audioFilePath) {
-    try {
+      console.log('📁 Reading audio file for upload...');
+      
+      // Read the file as a buffer
       const audioData = fs.readFileSync(audioFilePath);
-      const uploadResponse = await this.retryWithBackoff(async () => {
-        return await this.client.files.upload(audioData);
+      console.log(`📊 File read successfully: ${audioData.length} bytes`);
+
+      // Upload using axios
+      console.log('🚀 Uploading to AssemblyAI via axios...');
+      const uploadResponse = await axios.post(`${this.baseUrl}/v2/upload`, audioData, {
+        headers: {
+          'authorization': process.env.ASSEMBLYAI_API_KEY,
+          'content-type': 'application/octet-stream'
+        },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
       });
 
-      return uploadResponse.upload_url;
+      console.log('✅ Upload response:', {
+        status: uploadResponse.status,
+        upload_url: uploadResponse.data.upload_url ? 'received' : 'missing'
+      });
+
+      if (!uploadResponse.data.upload_url) {
+        throw new Error('Upload failed: No upload URL returned');
+      }
+
+      return uploadResponse.data.upload_url;
 
     } catch (error) {
       console.error('Audio upload error:', error);
-      throw new ServiceUnavailableError('Failed to upload audio to AssemblyAI');
+      
+      if (error.response) {
+        console.error('Upload error details:', {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data
+        });
+      }
+
+      throw new ServiceUnavailableError(`Failed to upload audio to AssemblyAI: ${error.message}`);
+    }
+  }
+
+  /**
+   * Create transcript using axios
+   */
+  async createTranscriptWithAxios(transcriptConfig) {
+    try {
+      const response = await axios.post(`${this.baseUrl}/v2/transcript`, transcriptConfig, {
+        headers: {
+          'authorization': process.env.ASSEMBLYAI_API_KEY,
+          'content-type': 'application/json'
+        }
+      });
+
+      return response.data;
+    } catch (error) {
+      console.error('Create transcript error:', error);
+      
+      if (error.response) {
+        console.error('Create transcript error details:', {
+          status: error.response.status,
+          data: error.response.data
+        });
+      }
+
+      throw error;
     }
   }
 
@@ -160,15 +189,27 @@ class AssemblyAIService {
     const maxAttempts = 200; // ~10 minutes max wait time
     let attempts = 0;
 
+    console.log(`🔍 Polling transcription status for ID: ${transcriptId}`);
+
     while (attempts < maxAttempts) {
       try {
-        const transcript = await this.client.transcripts.get(transcriptId);
+        const response = await axios.get(`${this.baseUrl}/v2/transcript/${transcriptId}`, {
+          headers: {
+            'authorization': process.env.ASSEMBLYAI_API_KEY
+          }
+        });
+
+        const transcript = response.data;
+
+        console.log(`📊 Poll attempt ${attempts + 1}: Status = ${transcript.status}`);
 
         if (transcript.status === 'completed') {
+          console.log('✅ Transcription completed successfully');
           return transcript;
         }
 
         if (transcript.status === 'error') {
+          console.error('❌ Transcription failed with error:', transcript.error);
           throw new Error(`Transcription failed: ${transcript.error}`);
         }
 
@@ -182,48 +223,54 @@ class AssemblyAIService {
       }
     }
 
-    throw new Error('Transcription timed out');
+    throw new Error('Transcription timed out after maximum attempts');
   }
 
   /**
    * Format transcription result for our system
    */
   formatTranscriptionResult(transcript, processingTime) {
-    return {
-      // Basic info
-      id: transcript.id,
+    console.log('📝 Formatting transcription result...');
+    
+    // Extract speaker information from utterances
+    const speakers = this.extractSpeakerInfoFromUtterances(transcript.utterances || []);
+    console.log(`👥 Extracted ${speakers.length} speakers:`, speakers.map(s => ({
+      label: s.label,
+      speakingTime: s.totalSpeakingTime,
+      wordCount: s.totalWords
+    })));
+
+    const result = {
+      // Basic transcription info (compatible with OpenAI Whisper format)
       text: transcript.text,
       language: transcript.language_code || 'en',
       confidence: transcript.confidence,
-      duration: transcript.audio_duration,
+      duration: transcript.audio_duration / 1000, // Convert ms to seconds
       processingTime: processingTime,
+      model: 'assemblyai-core',
+      wordCount: transcript.text ? transcript.text.split(/\s+/).length : 0,
 
-      // Speaker information
-      speakers: this.extractSpeakerInfo(transcript),
+      // Speaker diarization info
+      speakers: speakers,
       
-      // Detailed utterances with speaker labels
+      // Detailed utterances with speaker labels (converted to seconds)
       utterances: (transcript.utterances || []).map(utterance => ({
         speaker: utterance.speaker,
         text: utterance.text,
         confidence: utterance.confidence,
-        start: utterance.start / 1000, // Convert to seconds
+        start: utterance.start / 1000, // Convert ms to seconds
         end: utterance.end / 1000,
         words: (utterance.words || []).map(word => ({
           text: word.text,
           start: word.start / 1000,
           end: word.end / 1000,
-          confidence: word.confidence
+          confidence: word.confidence,
+          speaker: word.speaker
         }))
       })),
 
-      // Word-level timestamps
-      words: (transcript.words || []).map(word => ({
-        text: word.text,
-        start: word.start / 1000,
-        end: word.end / 1000,
-        confidence: word.confidence,
-        speaker: word.speaker
-      })),
+      // Word-level timestamps (converted to seconds)
+      words: [],
 
       // Additional analysis
       highlights: transcript.auto_highlights || [],
@@ -243,21 +290,44 @@ class AssemblyAIService {
         },
         audioUrl: transcript.audio_url,
         processingTime: processingTime,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        transcriptId: transcript.id
       }
     };
+
+    // Extract word-level data from utterances if not provided separately
+    if (transcript.utterances && transcript.utterances.length > 0) {
+      const allWords = [];
+      transcript.utterances.forEach(utterance => {
+        if (utterance.words) {
+          utterance.words.forEach(word => {
+            allWords.push({
+              text: word.text,
+              start: word.start / 1000,
+              end: word.end / 1000,
+              confidence: word.confidence,
+              speaker: word.speaker
+            });
+          });
+        }
+      });
+      result.words = allWords;
+    }
+
+    console.log('✅ Transcription result formatted successfully');
+    return result;
   }
 
   /**
-   * Extract speaker information and statistics
+   * Extract speaker information from utterances
    */
-  extractSpeakerInfo(transcript) {
+  extractSpeakerInfoFromUtterances(utterances) {
     const speakerStats = {};
 
     // Process utterances to gather speaker statistics
-    (transcript.utterances || []).forEach(utterance => {
+    utterances.forEach(utterance => {
       const speaker = utterance.speaker;
-      const duration = (utterance.end - utterance.start) / 1000;
+      const duration = (utterance.end - utterance.start) / 1000; // Convert to seconds
       const wordCount = (utterance.text || '').split(/\s+/).length;
 
       if (!speakerStats[speaker]) {
@@ -277,24 +347,12 @@ class AssemblyAIService {
       speakerStats[speaker].averageConfidence += utterance.confidence || 0;
     });
 
-    // Calculate averages and add sentiment data
+    // Calculate averages
     const speakers = Object.values(speakerStats).map(speaker => {
-      speaker.averageConfidence = speaker.averageConfidence / speaker.utteranceCount;
-      speaker.averageUtteranceLength = speaker.totalWords / speaker.utteranceCount;
-      
-      // Add sentiment analysis for this speaker
-      const speakerSentiments = (transcript.sentiment_analysis_results || [])
-        .filter(sentiment => 
-          sentiment.start >= 0 && 
-          transcript.utterances.some(u => 
-            u.speaker === speaker.label && 
-            u.start <= sentiment.start && 
-            u.end >= sentiment.end
-          )
-        );
-      
-      speaker.sentiments = speakerSentiments;
-      speaker.averageSentiment = this.calculateAverageSentiment(speakerSentiments);
+      if (speaker.utteranceCount > 0) {
+        speaker.averageConfidence = speaker.averageConfidence / speaker.utteranceCount;
+        speaker.averageUtteranceLength = speaker.totalWords / speaker.utteranceCount;
+      }
 
       return speaker;
     });
@@ -303,77 +361,33 @@ class AssemblyAIService {
   }
 
   /**
-   * Format real-time transcript data
+   * Test connection to AssemblyAI
    */
-  formatRealtimeTranscript(transcript) {
-    return {
-      text: transcript.text,
-      confidence: transcript.confidence,
-      messageType: transcript.message_type,
-      speaker: transcript.speaker || null,
-      timestamp: Date.now(),
-      words: (transcript.words || []).map(word => ({
-        text: word.text,
-        start: word.start,
-        end: word.end,
-        confidence: word.confidence
-      }))
-    };
-  }
-
-  /**
-   * Calculate average sentiment for a speaker
-   */
-  calculateAverageSentiment(sentiments) {
-    if (!sentiments || sentiments.length === 0) {
-      return { sentiment: 'NEUTRAL', confidence: 0 };
-    }
-
-    const sentimentValues = {
-      'POSITIVE': 1,
-      'NEUTRAL': 0,
-      'NEGATIVE': -1
-    };
-
-    let totalValue = 0;
-    let totalConfidence = 0;
-
-    sentiments.forEach(s => {
-      totalValue += (sentimentValues[s.sentiment] || 0) * s.confidence;
-      totalConfidence += s.confidence;
-    });
-
-    const averageValue = totalValue / totalConfidence;
-    const averageConfidence = totalConfidence / sentiments.length;
-
-    let sentiment = 'NEUTRAL';
-    if (averageValue > 0.1) sentiment = 'POSITIVE';
-    else if (averageValue < -0.1) sentiment = 'NEGATIVE';
-
-    return { sentiment, confidence: averageConfidence };
-  }
-
-  /**
-   * Retry mechanism with exponential backoff
-   */
-  async retryWithBackoff(operation, attempt = 1) {
+  async testConnection() {
     try {
-      return await operation();
-    } catch (error) {
-      if (attempt >= this.maxRetries) {
-        throw error;
-      }
-
-      const retryableErrors = [429, 500, 502, 503, 504];
-      if (!retryableErrors.includes(error.response?.status)) {
-        throw error;
-      }
-
-      const delay = this.retryDelay * Math.pow(2, attempt - 1);
-      console.log(`🔄 Retrying AssemblyAI operation (attempt ${attempt + 1}/${this.maxRetries}) in ${delay}ms`);
+      console.log('🔧 Testing AssemblyAI connection...');
       
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return this.retryWithBackoff(operation, attempt + 1);
+      // Test by trying to get transcripts list
+      const response = await axios.get(`${this.baseUrl}/v2/transcript`, {
+        headers: {
+          'authorization': process.env.ASSEMBLYAI_API_KEY
+        }
+      });
+      
+      console.log('✅ AssemblyAI connection test successful');
+      return {
+        success: true,
+        status: response.status,
+        transcripts_count: response.data.transcripts?.length || 0
+      };
+    } catch (error) {
+      console.error('❌ AssemblyAI connection test failed:', error);
+      return {
+        success: false,
+        error: error.message,
+        status: error.response?.status,
+        data: error.response?.data
+      };
     }
   }
 
