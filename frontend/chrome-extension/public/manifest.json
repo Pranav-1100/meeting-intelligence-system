@@ -10,7 +10,8 @@
       "storage",
       "notifications",
       "scripting",
-      "tabs"
+      "tabs",
+      "background"
     ],
     
     "host_permissions": [
@@ -19,11 +20,14 @@
       "*://teams.microsoft.com/*",
       "*://*.webex.com/*",
       "http://localhost:8000/*",
-      "http://localhost:3000/*"
+      "http://localhost:3000/*",
+      "https://localhost:8000/*",
+      "https://localhost:3000/*"
     ],
   
     "background": {
-      "service_worker": "background.js"
+      "service_worker": "background.js",
+      "type": "module"
     },
   
     "content_scripts": [
@@ -35,7 +39,8 @@
           "*://*.webex.com/*"
         ],
         "js": ["content.js"],
-        "run_at": "document_end"
+        "run_at": "document_end",
+        "all_frames": false
       }
     ],
   
@@ -61,13 +66,16 @@
       {
         "resources": [
           "overlay.html",
-          "icons/*"
+          "icons/*",
+          "auth-bridge.js"
         ],
         "matches": [
           "*://meet.google.com/*",
           "*://*.zoom.us/*",
           "*://teams.microsoft.com/*",
-          "*://*.webex.com/*"
+          "*://*.webex.com/*",
+          "http://localhost:3000/*",
+          "https://localhost:3000/*"
         ]
       }
     ],
@@ -86,8 +94,22 @@
           "mac": "Command+Shift+S"
         },
         "description": "Stop meeting recording"
+      },
+      "toggle-transcript": {
+        "suggested_key": {
+          "default": "Ctrl+Shift+T",
+          "mac": "Command+Shift+T"
+        },
+        "description": "Toggle live transcript panel"
       }
     },
   
-    "minimum_chrome_version": "110"
+    "minimum_chrome_version": "110",
+    
+    "externally_connectable": {
+      "matches": [
+        "http://localhost:3000/*",
+        "https://localhost:3000/*"
+      ]
+    }
   }

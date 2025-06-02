@@ -194,6 +194,63 @@ class ApiClient {
   }
 
   // ==========================================
+  // REAL-TIME RECORDING ENDPOINTS (for Chrome Extension)
+  // ==========================================
+
+  /**
+   * Start real-time recording session
+   */
+  async startRealtimeRecording(meetingData) {
+    console.log('🎤 Starting real-time recording session...', meetingData);
+    return this.request('/api/meetings/start-realtime', {
+      method: 'POST',
+      body: JSON.stringify({
+        meeting: meetingData,
+        chunkDuration: 35 // 35-second chunks
+      }),
+    });
+  }
+
+  /**
+   * Send audio chunk for real-time processing
+   */
+  async sendAudioChunk(chunkData) {
+    const { meetingId, chunkIndex, audioData, timestamp, size } = chunkData;
+    
+    console.log(`🎵 Sending audio chunk ${chunkIndex} for meeting ${meetingId} (${size} bytes)`);
+    
+    return this.request('/api/meetings/audio-chunk', {
+      method: 'POST',
+      body: JSON.stringify({
+        meetingId,
+        chunkIndex,
+        audioData, // Base64 encoded audio
+        timestamp,
+        size,
+        duration: 35 // 35 seconds
+      }),
+    });
+  }
+
+  /**
+   * Stop real-time recording session
+   */
+  async stopRealtimeRecording(meetingId) {
+    console.log('🛑 Stopping real-time recording session...', meetingId);
+    return this.request('/api/meetings/stop-realtime', {
+      method: 'POST',
+      body: JSON.stringify({ meetingId }),
+    });
+  }
+
+  /**
+   * Get real-time session status
+   */
+  async getRealtimeStatus(meetingId) {
+    return this.request(`/api/meetings/${meetingId}/realtime-status`);
+  }
+
+  // ==========================================
   // TRANSCRIPTION ENDPOINTS
   // ==========================================
 
@@ -356,6 +413,54 @@ class ApiClient {
    */
   async healthCheck() {
     return this.request('/health');
+  }
+
+  // ==========================================
+  // EXTENSION UTILITIES
+  // ==========================================
+
+  /**
+   * Validate audio chunk before sending
+   */
+  validateAudioChunk(chunkData) {
+    const { meetingId, chunkIndex, audioData, size } = chunkData;
+    
+    const errors = [];
+    
+    if (!meetingId) errors.push('Meeting ID is required');
+    if (chunkIndex === undefined) errors.push('Chunk index is required');
+    if (!audioData) errors.push('Audio data is required');
+    if (!size || size <= 0) errors.push('Valid audio size is required');
+    
+    // Validate base64 format
+    if (audioData && !/^[A-Za-z0-9+/]*={0,2}$/.test(audioData)) {
+      errors.push('Audio data must be valid base64');
+    }
+    
+    // Check size limits (max 10MB per chunk)
+    if (size && size > 10 * 1024 * 1024) {
+      errors.push('Audio chunk too large (max 10MB)');
+    }
+    
+    return {
+      isValid: errors.length === 0,
+      errors
+    };
+  }
+
+  /**
+   * Convert audio blob to base64 for sending
+   */
+  async audioBlobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result.split(',')[1]; // Remove data:audio/webm;base64, prefix
+        resolve(base64);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
   }
 }
 

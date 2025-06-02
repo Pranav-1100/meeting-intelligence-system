@@ -653,6 +653,932 @@ router.post('/:id/debug-assemblyai', asyncHandler(async (req, res) => {
 }));
 
 /**
+ * POST /api/meetings/start-realtime
+ * Start real-time recording session for Chrome extension (35-second chunks)
+ */
+router.post('/start-realtime', asyncHandler(async (req, res) => {
+  console.log('🎬 Starting real-time recording session...');
+  
+  // For now, skip authentication - TODO: Add Firebase auth
+  const userId = 'demo-user-id'; // req.user?.id || 'demo-user-id';
+  const { meeting, chunkDuration = 35 } = req.body;
+
+  if (!meeting || !meeting.title) {
+    throw new ValidationError('Meeting data with title is required');
+  }
+
+  console.log(`🎤 Starting real-time recording session:`, {
+    title: meeting.title,
+    platform: meeting.platform,
+    chunkDuration: chunkDuration
+  });
+  
+  try {
+    const db = getDb();
+    const meetingId = uuidv4();
+    const sessionId = uuidv4();
+
+    // Create meeting record
+    const meetingData = {
+      id: meetingId,
+      user_id: userId,
+      title: meeting.title,
+      description: meeting.description || '',
+      meeting_type: 'realtime',
+      platform: meeting.platform || 'unknown',
+      external_meeting_id: meeting.url || null,
+      status: 'in_progress',
+      processing_status: 'pending',
+      actual_start: new Date().toISOString(),
+      metadata: JSON.stringify({
+        source: 'chrome-extension',
+        url: meeting.url,
+        chunkDuration: chunkDuration,
+        tabId: meeting.tabId,
+        sessionId: sessionId,
+        startedAt: new Date().toISOString(),
+        expectedChunkInterval: `${chunkDuration} seconds`
+      })
+    };
+
+    // Insert meeting
+    db.prepare(`
+      INSERT INTO meetings (
+        id, user_id, title, description, meeting_type, platform,
+        external_meeting_id, status, processing_status, actual_start, metadata
+      ) VALUES (
+        @id, @user_id, @title, @description, @meeting_type, @platform,
+        @external_meeting_id, @status, @processing_status, @actual_start, @metadata
+      )
+    `).run(meetingData);
+
+    // Create realtime session
+    const sessionData = {
+      id: sessionId,
+      socket_id: req.headers['x-socket-id'] || 'extension-session',
+      user_id: userId,
+      meeting_id: meetingId,
+      status: 'active',
+      chunks_processed: 0,
+      total_duration: 0
+    };
+
+    db.prepare(`
+      INSERT INTO realtime_sessions (
+        id, socket_id, user_id, meeting_id, status, chunks_processed, total_duration
+      ) VALUES (
+        @id, @socket_id, @user_id, @meeting_id, @status, @chunks_processed, @total_duration
+      )
+    `).run(sessionData);
+
+    console.log(`✅ Real-time session started: ${sessionId} for meeting: ${meetingId}`);
+
+    // Notify via WebSocket if available
+    if (global.io) {
+      global.io.to(`user_${userId}`).emit('session_started', {
+        type: 'session_started',
+        data: {
+          meetingId,
+          sessionId,
+          meeting: meetingData
+        }
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      meetingId,
+      sessionId,
+      meeting: {
+        id: meetingId,
+        title: meeting.title,
+        status: 'in_progress',
+        processing_status: 'pending',
+        chunkDuration: chunkDuration
+      },
+      message: `Real-time recording session started successfully (${chunkDuration}s chunks)`
+    });
+
+  } catch (error) {
+    console.error('❌ Failed to start real-time session:', error);
+    throw error;
+  }
+}));
+
+/**
+ * POST /api/meetings/audio-chunk
+ * Process 35-second audio chunks from Chrome extension
+ */
+router.post('/audio-chunk', asyncHandler(async (req, res) => {
+  console.log('🎵 Received audio chunk from extension...');
+  
+  // For now, skip authentication - TODO: Add Firebase auth
+  const userId = 'demo-user-id'; // req.user?.id || 'demo-user-id';
+  const { 
+    meetingId, 
+    chunkIndex, 
+    audioData, 
+    timestamp, 
+    size, 
+    duration = 35 
+  } = req.body;
+
+  if (!meetingId || chunkIndex === undefined || !audioData) {
+    throw new ValidationError('Missing required fields: meetingId, chunkIndex, audioData');
+  }
+
+  console.log(`🎵 Processing audio chunk ${chunkIndex} for meeting ${meetingId}:`, {
+    size: size,
+    duration: duration,
+    timestamp: new Date(timestamp).toLocaleTimeString()
+  });
+
+  try {
+    const db = getDb();
+
+    // Verify meeting belongs to user and is active
+    const meeting = db.prepare(`
+      SELECT * FROM meetings WHERE id = ? AND user_id = ? AND status = 'in_progress'
+    `).get(meetingId, userId);
+
+    if (!meeting) {
+      throw new NotFoundError('Active meeting not found');
+    }
+
+    // Use the realtime service to process the chunk
+    const result = await realtimeService.processAudioChunk({
+      meetingId,
+      chunkIndex,
+      audioData,
+      timestamp,
+      size,
+      duration
+    });
+
+    // Update session stats in database
+    db.prepare(`
+      UPDATE realtime_sessions 
+      SET chunks_processed = chunks_processed + 1,
+          total_duration = total_duration + ?,
+          last_activity = CURRENT_TIMESTAMP
+      WHERE meeting_id = ? AND user_id = ?
+    `).run(duration, meetingId, userId);
+
+    // Store chunk metadata in database
+    const chunkData = {
+      id: uuidv4(),
+      session_id: meetingId, // Using meetingId as session reference
+      chunk_index: chunkIndex,
+      file_path: result.filePath || null,
+      duration: duration,
+      size: size,
+      processed: false, // Will be set to true after transcription
+      created_at: new Date().toISOString()
+    };
+
+    db.prepare(`
+      INSERT INTO audio_chunks (
+        id, session_id, chunk_index, file_path, duration, size, processed, created_at
+      ) VALUES (
+        @id, @session_id, @chunk_index, @file_path, @duration, @size, @processed, @created_at
+      )
+    `).run(chunkData);
+
+    // TODO: Process chunk for transcription asynchronously
+    // For now, simulate processing
+    setTimeout(async () => {
+      try {
+        await processChunkForTranscription(meetingId, chunkIndex, result.filePath, userId);
+      } catch (error) {
+        console.error(`❌ Chunk transcription failed for ${chunkIndex}:`, error);
+      }
+    }, 1000);
+
+    // Send real-time update via WebSocket
+    if (global.io) {
+      global.io.to(`user_${userId}`).emit('chunk_received', {
+        type: 'chunk_received',
+        data: {
+          meetingId,
+          chunkIndex,
+          status: 'received',
+          timestamp: Date.now()
+        }
+      });
+    }
+
+    console.log(`✅ Chunk ${chunkIndex} processed successfully`);
+
+    res.json({
+      success: true,
+      chunkIndex,
+      meetingId,
+      size,
+      message: `Audio chunk ${chunkIndex} received and queued for processing`
+    });
+
+  } catch (error) {
+    console.error('❌ Failed to process audio chunk:', error);
+    throw error;
+  }
+}));
+
+/**
+ * Process chunk for transcription (async function)
+ */
+async function processChunkForTranscription(meetingId, chunkIndex, filePath, userId) {
+  try {
+    console.log(`🔄 Starting transcription for chunk ${chunkIndex}...`);
+    
+    if (!filePath || !fs.existsSync(filePath)) {
+      console.warn(`⚠️ Audio file not found for chunk ${chunkIndex}: ${filePath}`);
+      return;
+    }
+
+    const db = getDb();
+
+    // TODO: Integrate with AssemblyAI for real transcription
+    // For now, simulate transcription
+    const simulatedTranscript = `This is chunk ${chunkIndex} transcription. Speaking time: ${Date.now()}`;
+    
+    // Store transcript segment
+    const segmentId = uuidv4();
+    const startTime = chunkIndex * 35; // 35 seconds per chunk
+    const endTime = startTime + 35;
+
+    db.prepare(`
+      INSERT INTO transcript_segments (
+        id, transcript_id, content, start_time, end_time,
+        confidence_score, segment_index, is_final, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      segmentId,
+      meetingId, // Using meetingId as transcript reference
+      simulatedTranscript,
+      startTime,
+      endTime,
+      0.95, // Simulated confidence
+      chunkIndex,
+      1, // Mark as final
+      new Date().toISOString()
+    );
+
+    // TODO: Analyze for action items with OpenAI
+    // For now, simulate action item detection
+    if (chunkIndex % 3 === 0) { // Every 3rd chunk has an action item
+      const actionId = uuidv4();
+      const actionItem = {
+        id: actionId,
+        title: `Action item from chunk ${chunkIndex}`,
+        description: `Follow up on discussion from chunk ${chunkIndex}`,
+        assignee: null,
+        priority: 'medium',
+        confidence: 0.8
+      };
+
+      db.prepare(`
+        INSERT INTO action_items (
+          id, meeting_id, title, description, priority,
+          status, confidence_score, context_timestamp, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        actionId,
+        meetingId,
+        actionItem.title,
+        actionItem.description,
+        actionItem.priority,
+        'pending',
+        actionItem.confidence,
+        startTime,
+        new Date().toISOString()
+      );
+
+      // Send action item notification
+      if (global.io) {
+        global.io.to(`user_${userId}`).emit('action_item_detected', {
+          type: 'action_item_detected',
+          data: {
+            meetingId,
+            chunkIndex,
+            actionItem
+          }
+        });
+      }
+    }
+
+    // Mark chunk as processed
+    db.prepare(`
+      UPDATE audio_chunks 
+      SET processed = true, 
+          transcript_segment_id = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE session_id = ? AND chunk_index = ?
+    `).run(segmentId, meetingId, chunkIndex);
+
+    // Send transcript update
+    if (global.io) {
+      global.io.to(`user_${userId}`).emit('transcript_update', {
+        type: 'transcript_update',
+        data: {
+          meetingId,
+          chunkIndex,
+          content: simulatedTranscript,
+          startTime,
+          endTime,
+          timestamp: Date.now()
+        }
+      });
+    }
+
+    // Send processing complete notification
+    if (global.io) {
+      global.io.to(`user_${userId}`).emit('chunk_processed', {
+        type: 'chunk_processed',
+        data: {
+          meetingId,
+          chunkIndex,
+          status: 'completed',
+          hasTranscript: true
+        }
+      });
+    }
+
+    console.log(`✅ Chunk ${chunkIndex} transcription completed`);
+
+  } catch (error) {
+    console.error(`❌ Transcription failed for chunk ${chunkIndex}:`, error);
+    
+    // Send error notification
+    if (global.io) {
+      global.io.to(`user_${userId}`).emit('processing_error', {
+        type: 'processing_error',
+        data: {
+          meetingId,
+          chunkIndex,
+          error: error.message
+        }
+      });
+    }
+  }
+}
+
+/**
+ * POST /api/meetings/stop-realtime
+ * Stop real-time recording session
+ */
+router.post('/stop-realtime', asyncHandler(async (req, res) => {
+  console.log('🛑 Stopping real-time recording session...');
+  
+  // For now, skip authentication - TODO: Add Firebase auth
+  const userId = 'demo-user-id'; // req.user?.id || 'demo-user-id';
+  const { meetingId } = req.body;
+
+  if (!meetingId) {
+    throw new ValidationError('Meeting ID is required');
+  }
+
+  console.log(`🛑 Stopping real-time recording for meeting: ${meetingId}`);
+
+  try {
+    const db = getDb();
+
+    // Verify meeting belongs to user
+    const meeting = db.prepare(`
+      SELECT * FROM meetings WHERE id = ? AND user_id = ?
+    `).get(meetingId, userId);
+
+    if (!meeting) {
+      throw new NotFoundError('Meeting not found');
+    }
+
+    // Update meeting status
+    db.prepare(`
+      UPDATE meetings 
+      SET status = 'completed', 
+          actual_end = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND user_id = ?
+    `).run(meetingId, userId);
+
+    // Update session status
+    db.prepare(`
+      UPDATE realtime_sessions 
+      SET status = 'completed',
+          last_activity = CURRENT_TIMESTAMP
+      WHERE meeting_id = ? AND user_id = ?
+    `).run(meetingId, userId);
+
+    // Get session stats
+    const session = db.prepare(`
+      SELECT * FROM realtime_sessions WHERE meeting_id = ? AND user_id = ?
+    `).get(meetingId, userId);
+
+    // Get chunk count
+    const chunkCount = db.prepare(
+      'SELECT COUNT(*) as count FROM audio_chunks WHERE session_id = ?'
+    ).get(meetingId).count;
+
+    // End session in realtime service
+    const sessionResult = await realtimeService.endSession(meetingId);
+
+    console.log(`✅ Real-time recording stopped for meeting: ${meetingId}`, {
+      chunksProcessed: session?.chunks_processed || 0,
+      totalDuration: session?.total_duration || 0,
+      totalChunks: chunkCount
+    });
+
+    // Generate final meeting summary (async)
+    setTimeout(async () => {
+      try {
+        await generateFinalMeetingSummary(meetingId, userId);
+      } catch (error) {
+        console.error('❌ Final summary generation failed:', error);
+      }
+    }, 2000);
+
+    // Notify via WebSocket
+    if (global.io) {
+      global.io.to(`user_${userId}`).emit('session_stopped', {
+        type: 'session_stopped',
+        data: {
+          meetingId,
+          chunksProcessed: session?.chunks_processed || 0,
+          totalDuration: session?.total_duration || 0,
+          totalChunks: chunkCount
+        }
+      });
+    }
+
+    res.json({
+      success: true,
+      meetingId,
+      chunksProcessed: session?.chunks_processed || 0,
+      totalDuration: session?.total_duration || 0,
+      totalChunks: chunkCount,
+      message: 'Recording session stopped successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Failed to stop real-time session:', error);
+    throw error;
+  }
+}));
+
+/**
+ * Generate final meeting summary
+ */
+async function generateFinalMeetingSummary(meetingId, userId) {
+  try {
+    console.log(`📋 Generating final summary for meeting: ${meetingId}`);
+    
+    const db = getDb();
+
+    // Get all transcript segments
+    const segments = db.prepare(`
+      SELECT * FROM transcript_segments 
+      WHERE transcript_id = ? 
+      ORDER BY start_time ASC
+    `).all(meetingId);
+
+    if (segments.length === 0) {
+      console.log('ℹ️ No transcript segments found for summary');
+      return;
+    }
+
+    // Combine all segments
+    const fullTranscript = segments.map(s => s.content).join(' ');
+    const totalDuration = Math.max(...segments.map(s => s.end_time));
+
+    // Create final transcript record
+    const transcriptId = uuidv4();
+    db.prepare(`
+      INSERT INTO transcripts (
+        id, meeting_id, content, language, confidence_score,
+        word_count, processing_time, model_version, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      transcriptId,
+      meetingId,
+      fullTranscript,
+      'en',
+      0.95,
+      fullTranscript.split(' ').length,
+      totalDuration,
+      'extension-realtime',
+      new Date().toISOString()
+    );
+
+    // TODO: Generate AI summary with OpenAI
+    // For now, create basic summary
+    const summary = `Meeting summary generated from ${segments.length} audio chunks. Total duration: ${Math.round(totalDuration / 60)} minutes.`;
+
+    // Store final analysis
+    const analysisId = uuidv4();
+    db.prepare(`
+      INSERT INTO meeting_analysis (
+        id, meeting_id, analysis_type, summary, key_points,
+        decisions, topics, sentiment_analysis, confidence_score,
+        model_version, processing_time, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      analysisId,
+      meetingId,
+      'comprehensive',
+      summary,
+      JSON.stringify([`Generated from ${segments.length} chunks`]),
+      JSON.stringify(['Meeting completed successfully']),
+      JSON.stringify(['realtime-recording', 'chunk-processing']),
+      JSON.stringify({ overall: 'neutral' }),
+      0.8,
+      'extension-realtime',
+      totalDuration,
+      new Date().toISOString()
+    );
+
+    // Update meeting processing status
+    db.prepare(
+      'UPDATE meetings SET processing_status = ?, processing_progress = 100 WHERE id = ?'
+    ).run('completed', meetingId);
+
+    console.log(`✅ Final summary generated for meeting: ${meetingId}`);
+
+    // Send completion notification
+    if (global.io) {
+      global.io.to(`user_${userId}`).emit('meeting_completed', {
+        type: 'meeting_completed',
+        data: {
+          meetingId,
+          summary,
+          totalDuration,
+          chunksProcessed: segments.length,
+          transcriptId,
+          analysisId
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error(`❌ Final summary generation failed for meeting ${meetingId}:`, error);
+  }
+}
+
+/**
+ * GET /api/meetings/:id/realtime-status
+ * Get real-time session status (with chunk details)
+ */
+router.get('/:id/realtime-status', asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  // For now, skip authentication - TODO: Add Firebase auth
+  const userId = 'demo-user-id'; // req.user?.id || 'demo-user-id';
+
+  const db = getDb();
+  
+  // Get meeting and session data
+  const meeting = db.prepare(`
+    SELECT * FROM meetings WHERE id = ? AND user_id = ?
+  `).get(id, userId);
+
+  if (!meeting) {
+    throw new NotFoundError('Meeting not found');
+  }
+
+  const session = db.prepare(`
+    SELECT * FROM realtime_sessions WHERE meeting_id = ? AND user_id = ?
+  `).get(id, userId);
+
+  const chunks = db.prepare(`
+    SELECT COUNT(*) as total, 
+           SUM(CASE WHEN processed = 1 THEN 1 ELSE 0 END) as processed,
+           MAX(chunk_index) as latest_chunk
+    FROM audio_chunks WHERE session_id = ?
+  `).get(id);
+
+  // Get realtime service stats
+  const serviceStats = realtimeService.getSessionStats(id);
+
+  res.json({
+    meetingId: id,
+    status: meeting.status,
+    processing_status: meeting.processing_status,
+    session: session ? {
+      id: session.id,
+      status: session.status,
+      chunks_processed: session.chunks_processed,
+      total_duration: session.total_duration,
+      last_activity: session.last_activity
+    } : null,
+    chunks: {
+      total: chunks.total || 0,
+      processed: chunks.processed || 0,
+      pending: (chunks.total || 0) - (chunks.processed || 0),
+      latest_chunk: chunks.latest_chunk || 0
+    },
+    serviceStats: serviceStats,
+    expected_chunk_interval: '35 seconds'
+  });
+}));
+
+/**
+ * Process audio chunk in real-time (35-second chunks)
+ */
+async function processAudioChunkRealtime(meetingId, chunkIndex, chunkFilePath, userId, duration) {
+  try {
+    console.log(`🔄 Processing real-time chunk ${chunkIndex} for meeting ${meetingId}`);
+    
+    const db = getDb();
+
+    // Convert WebM to WAV for better AssemblyAI compatibility
+    const wavPath = chunkFilePath.replace('.webm', '.wav');
+    await convertWebMToWav(chunkFilePath, wavPath);
+
+    // Step 1: Transcribe chunk with AssemblyAI
+    const transcriptionResult = await assemblyaiService.transcribeWithDiarization(wavPath, {
+      minSpeakers: 1,
+      maxSpeakers: 4, // Limit for chunk processing
+      language: 'en',
+      enableAutoHighlights: false,
+      enableSentimentAnalysis: false
+    });
+
+    console.log(`✅ Chunk ${chunkIndex} transcribed:`, {
+      text: transcriptionResult.text?.substring(0, 100) + '...',
+      duration: transcriptionResult.duration,
+      speakers: transcriptionResult.speakers?.length || 0
+    });
+
+    // Step 2: Store transcript segment
+    if (transcriptionResult.text && transcriptionResult.text.trim()) {
+      const segmentId = uuidv4();
+      const startTime = chunkIndex * duration;
+      const endTime = startTime + duration;
+
+      db.prepare(`
+        INSERT INTO transcript_segments (
+          id, transcript_id, content, start_time, end_time,
+          confidence_score, segment_index, is_final, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        segmentId,
+        meetingId, // Using meetingId as transcript reference for chunks
+        transcriptionResult.text,
+        startTime,
+        endTime,
+        transcriptionResult.confidence || 0.9,
+        chunkIndex,
+        1, // Mark as final for chunks
+        new Date().toISOString()
+      );
+
+      // Step 3: Analyze chunk for action items with GPT-4
+      if (transcriptionResult.text.length > 50) { // Only analyze substantial chunks
+        try {
+          const actionItemsResult = await openaiService.extractActionItemsFromChunk(
+            transcriptionResult.text,
+            { chunkIndex, timestamp: startTime }
+          );
+
+          if (actionItemsResult.actionItems && actionItemsResult.actionItems.length > 0) {
+            const actionStmt = db.prepare(`
+              INSERT INTO action_items (
+                id, meeting_id, title, description, assignee_name, priority,
+                status, category, context_timestamp, confidence_score,
+                extracted_from_text, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `);
+
+            actionItemsResult.actionItems.forEach(item => {
+              const actionId = uuidv4();
+              actionStmt.run(
+                actionId,
+                meetingId,
+                item.title,
+                item.description || '',
+                item.assignee || null,
+                item.priority || 'medium',
+                'pending',
+                item.category || 'task',
+                startTime,
+                item.confidence || 0.7,
+                transcriptionResult.text.substring(0, 200),
+                new Date().toISOString()
+              );
+
+              // Send real-time action item notification
+              if (global.io) {
+                global.io.to(`user_${userId}`).emit('action_item_detected', {
+                  type: 'action_item_detected',
+                  data: {
+                    meetingId,
+                    chunkIndex,
+                    actionItem: {
+                      id: actionId,
+                      title: item.title,
+                      assignee: item.assignee,
+                      priority: item.priority,
+                      timestamp: Date.now()
+                    }
+                  }
+                });
+              }
+            });
+
+            console.log(`🎯 Found ${actionItemsResult.actionItems.length} action items in chunk ${chunkIndex}`);
+          }
+        } catch (error) {
+          console.error(`Action item extraction failed for chunk ${chunkIndex}:`, error);
+        }
+      }
+
+      // Step 4: Send real-time transcript update
+      if (global.io) {
+        global.io.to(`user_${userId}`).emit('transcript_update', {
+          type: 'transcript_update',
+          data: {
+            meetingId,
+            chunkIndex,
+            content: transcriptionResult.text,
+            timestamp: Date.now(),
+            startTime,
+            endTime
+          }
+        });
+      }
+    }
+
+    // Mark chunk as processed
+    db.prepare(`
+      UPDATE audio_chunks 
+      SET processed = true, 
+          transcript_segment_id = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE session_id = ? AND chunk_index = ?
+    `).run(segmentId || null, meetingId, chunkIndex);
+
+    // Send processing complete notification
+    if (global.io) {
+      global.io.to(`user_${userId}`).emit('chunk_processed', {
+        type: 'chunk_processed',
+        data: {
+          meetingId,
+          chunkIndex,
+          status: 'completed',
+          hasTranscript: !!transcriptionResult.text
+        }
+      });
+    }
+
+    // Cleanup temp files after a delay
+    setTimeout(() => {
+      try {
+        if (fs.existsSync(chunkFilePath)) fs.unlinkSync(chunkFilePath);
+        if (fs.existsSync(wavPath)) fs.unlinkSync(wavPath);
+      } catch (err) {
+        console.log('Cleanup error:', err.message);
+      }
+    }, 300000); // 5 minutes
+
+    console.log(`✅ Chunk ${chunkIndex} processing completed`);
+
+  } catch (error) {
+    console.error(`❌ Real-time chunk processing failed for chunk ${chunkIndex}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Process final meeting compilation (after all chunks)
+ */
+async function processFinalMeetingCompilation(meetingId, userId) {
+  try {
+    console.log(`🔄 Starting final compilation for meeting ${meetingId}`);
+    
+    const db = getDb();
+
+    // Get all transcript segments
+    const segments = db.prepare(`
+      SELECT * FROM transcript_segments 
+      WHERE transcript_id = ? 
+      ORDER BY start_time ASC
+    `).all(meetingId);
+
+    if (segments.length === 0) {
+      console.log('No transcript segments found for compilation');
+      return;
+    }
+
+    // Combine all segments into full transcript
+    const fullTranscript = segments.map(s => s.content).join(' ');
+    const totalDuration = Math.max(...segments.map(s => s.end_time));
+
+    // Create final transcript record
+    const transcriptId = uuidv4();
+    db.prepare(`
+      INSERT INTO transcripts (
+        id, meeting_id, content, language, confidence_score,
+        word_count, processing_time, model_version, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      transcriptId,
+      meetingId,
+      fullTranscript,
+      'en',
+      0.9,
+      fullTranscript.split(' ').length,
+      totalDuration,
+      'assemblyai-realtime',
+      new Date().toISOString()
+    );
+
+    // Update meeting with final stats
+    db.prepare(`
+      UPDATE meetings 
+      SET processing_status = 'completed',
+          audio_duration = ?,
+          processing_progress = 100,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(totalDuration, meetingId);
+
+    // Generate final meeting analysis
+    const analysisResult = await openaiService.analyzeMeeting(fullTranscript, {
+      analysisType: 'comprehensive',
+      meetingContext: { 
+        duration: totalDuration,
+        method: 'realtime-chunks',
+        chunksProcessed: segments.length
+      }
+    });
+
+    // Store final analysis
+    const analysisId = uuidv4();
+    db.prepare(`
+      INSERT INTO meeting_analysis (
+        id, meeting_id, analysis_type, summary, key_points,
+        decisions, topics, sentiment_analysis, confidence_score,
+        model_version, processing_time, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      analysisId,
+      meetingId,
+      'comprehensive',
+      analysisResult.summary || '',
+      JSON.stringify(analysisResult.keyPoints || []),
+      JSON.stringify(analysisResult.decisions || []),
+      JSON.stringify(analysisResult.topics || []),
+      JSON.stringify(analysisResult.sentiment || {}),
+      0.8,
+      analysisResult.metadata?.model || 'gpt-4',
+      analysisResult.metadata?.processingTime || 0,
+      new Date().toISOString()
+    );
+
+    console.log(`✅ Final compilation completed for meeting ${meetingId}`);
+
+    // Send completion notification
+    if (global.io) {
+      global.io.to(`user_${userId}`).emit('meeting_completed', {
+        type: 'meeting_completed',
+        data: {
+          meetingId,
+          duration: totalDuration,
+          chunksProcessed: segments.length,
+          actionItemsTotal: db.prepare(
+            'SELECT COUNT(*) as count FROM action_items WHERE meeting_id = ?'
+          ).get(meetingId).count
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error(`❌ Final compilation failed for meeting ${meetingId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Convert WebM to WAV using FFmpeg
+ */
+async function convertWebMToWav(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = require('fluent-ffmpeg');
+    
+    ffmpeg(inputPath)
+      .toFormat('wav')
+      .audioChannels(1)
+      .audioFrequency(16000)
+      .on('end', () => {
+        console.log(`🔄 Converted WebM to WAV: ${outputPath}`);
+        resolve();
+      })
+      .on('error', (err) => {
+        console.error('FFmpeg conversion error:', err);
+        reject(err);
+      })
+      .save(outputPath);
+  });
+}
+
+/**
  * Async function to process audio file
  */
 /**

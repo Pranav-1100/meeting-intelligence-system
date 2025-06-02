@@ -22,6 +22,9 @@ const transcriptionRoutes = require('./routes/transcription');
 const analysisRoutes = require('./routes/analysis');
 const mcpRoutes = require('./routes/mcp');
 
+// NEW: Import real-time routes for Chrome extension
+const realtimeRoutes = require('./routes/realtime');
+
 // Import WebSocket handlers
 const { handleRealtimeAudio } = require('./services/realtime');
 
@@ -37,7 +40,8 @@ const io = socketIo(server, {
       /^chrome-extension:\/\/[a-z]+$/  // Chrome extension pattern
     ],
     methods: ["GET", "POST"],
-    credentials: true
+    credentials: true,
+    allowedHeaders: ["Content-Type", "Authorization"]
   }
 });
 
@@ -60,6 +64,8 @@ app.use(morgan('combined'));
 // FIXED: Updated CORS configuration for Chrome Extensions
 app.use(cors({
   origin: function (origin, callback) {
+    console.log('CORS request from origin:', origin);
+    
     // Allow requests with no origin (like mobile apps or chrome extensions)
     if (!origin) return callback(null, true);
     
@@ -72,6 +78,7 @@ app.use(cors({
     
     // Allow Chrome extension origins
     if (origin.startsWith('chrome-extension://')) {
+      console.log('✅ Allowing Chrome extension origin:', origin);
       return callback(null, true);
     }
     
@@ -85,9 +92,12 @@ app.use(cors({
       return callback(null, true);
     }
     
+    console.log('❌ CORS blocked origin:', origin);
     callback(new Error('Not allowed by CORS'));
   },
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
 app.use(express.json({ limit: '100mb' }));
@@ -101,7 +111,8 @@ app.get('/health', (req, res) => {
     version: process.env.npm_package_version || '1.0.0',
     environment: process.env.NODE_ENV || 'development',
     origin: req.headers.origin || 'no-origin',
-    userAgent: req.headers['user-agent']
+    userAgent: req.headers['user-agent'],
+    activeSessions: req.activeSessions || 0
   });
 });
 
@@ -111,6 +122,10 @@ app.options('*', cors());
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/meetings', authenticateFirebase, meetingRoutes);
+
+// NEW: Real-time routes for Chrome extension (no auth required for testing)
+app.use('/api/meetings', realtimeRoutes);
+
 app.use('/api/transcription', authenticateFirebase, transcriptionRoutes);
 app.use('/api/analysis', authenticateFirebase, analysisRoutes);
 app.use('/api/mcp', authenticateFirebase, mcpRoutes);
@@ -120,18 +135,101 @@ app.use(errorHandler);
 
 // 404 handler
 app.use('*', (req, res) => {
+  console.log('❌ 404 Not Found:', req.method, req.originalUrl);
   res.status(404).json({ 
     error: 'Route not found',
     path: req.originalUrl,
-    method: req.method 
+    method: req.method,
+    availableRoutes: [
+      'GET /health',
+      'POST /api/meetings/start-realtime',
+      'POST /api/meetings/audio-chunk', 
+      'POST /api/meetings/stop-realtime',
+      'GET /api/meetings/sessions'
+    ]
   });
 });
 
-// WebSocket connection handling - Enhanced logging
+// WebSocket connection handling - Enhanced for extension integration
 io.on('connection', (socket) => {
-  console.log(`Client connected: ${socket.id} from origin: ${socket.handshake.headers.origin}`);
+  console.log(`📱 Client connected: ${socket.id} from origin: ${socket.handshake.headers.origin}`);
 
-  // Handle real-time audio streaming
+  // Handle Chrome extension real-time events
+  socket.on('extension_start_recording', async (data) => {
+    try {
+      console.log('🎤 Extension started recording:', data);
+      
+      // Broadcast to all clients (including frontend dashboard)
+      io.emit('recording_started', {
+        source: 'chrome-extension',
+        meeting: data.meeting,
+        timestamp: Date.now()
+      });
+      
+      socket.emit('recording_confirmed', { 
+        success: true, 
+        meetingId: data.meeting?.id 
+      });
+      
+    } catch (error) {
+      console.error('Error handling extension recording start:', error);
+      socket.emit('error', { message: 'Failed to start recording' });
+    }
+  });
+
+  socket.on('extension_audio_chunk', async (data) => {
+    try {
+      console.log('🎵 Extension audio chunk received:', {
+        meetingId: data.meetingId,
+        chunkIndex: data.chunkIndex,
+        size: data.size || 'unknown'
+      });
+      
+      // Process audio chunk here (placeholder)
+      // TODO: Integrate with your existing audio processing pipeline
+      
+      // Send real-time updates to frontend dashboard
+      io.emit('transcript_update', {
+        meetingId: data.meetingId,
+        content: `[Chunk ${data.chunkIndex}] Processing audio...`,
+        timestamp: Date.now(),
+        source: 'chrome-extension'
+      });
+      
+      socket.emit('chunk_processed', { 
+        success: true, 
+        chunkIndex: data.chunkIndex 
+      });
+      
+    } catch (error) {
+      console.error('Error processing audio chunk:', error);
+      socket.emit('error', { message: 'Failed to process audio chunk' });
+    }
+  });
+
+  socket.on('extension_stop_recording', async (data) => {
+    try {
+      console.log('🛑 Extension stopped recording:', data);
+      
+      // Broadcast to all clients
+      io.emit('recording_stopped', {
+        source: 'chrome-extension',
+        meetingId: data.meetingId,
+        timestamp: Date.now()
+      });
+      
+      socket.emit('recording_stopped_confirmed', { 
+        success: true, 
+        meetingId: data.meetingId 
+      });
+      
+    } catch (error) {
+      console.error('Error handling extension recording stop:', error);
+      socket.emit('error', { message: 'Failed to stop recording' });
+    }
+  });
+
+  // Existing Socket.IO handlers
   socket.on('start_meeting', async (data) => {
     try {
       console.log('Starting meeting:', data);
@@ -173,7 +271,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    console.log(`Client disconnected: ${socket.id}`);
+    console.log(`📱 Client disconnected: ${socket.id}`);
     // Cleanup any ongoing recordings for this socket
     if (handleRealtimeAudio && handleRealtimeAudio.cleanup) {
       handleRealtimeAudio.cleanup(socket.id);
@@ -188,6 +286,11 @@ async function startServer() {
     await initializeDatabase();
     console.log('✅ Database initialized successfully');
 
+    // Create temp directories
+    const fs = require('fs').promises;
+    await fs.mkdir('./temp/audio', { recursive: true });
+    console.log('✅ Temp directories created');
+
     // Start server
     const PORT = process.env.PORT || 8000;
     server.listen(PORT, () => {
@@ -196,6 +299,11 @@ async function startServer() {
       console.log(`🔌 WebSocket server ready for real-time connections`);
       console.log(`🌐 CORS enabled for Chrome extensions and localhost origins`);
       console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`🎤 Real-time extension endpoints:`);
+      console.log(`   POST /api/meetings/start-realtime`);
+      console.log(`   POST /api/meetings/audio-chunk`);
+      console.log(`   POST /api/meetings/stop-realtime`);
+      console.log(`   GET  /api/meetings/sessions`);
     });
 
   } catch (error) {

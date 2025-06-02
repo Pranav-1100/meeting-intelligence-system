@@ -1,4 +1,4 @@
-console.log('Meeting Intelligence: Enhanced content script loaded');
+console.log('Meeting Intelligence: Enhanced content script with real-time updates loaded');
 
 // Configuration
 const MEETING_CONFIG = {
@@ -36,6 +36,7 @@ const MEETING_CONFIG = {
 
 // State
 let isRecording = false;
+let isAuthenticated = false;
 let currentMeeting = null;
 let overlay = null;
 let indicator = null;
@@ -44,6 +45,8 @@ let platform = null;
 let liveTranscript = '';
 let actionItems = [];
 let isTranscriptPanelOpen = false;
+let chunkCounter = 0;
+let lastTranscriptUpdate = Date.now();
 
 // Initialize when page loads
 function initialize() {
@@ -54,13 +57,26 @@ function initialize() {
     createRecordingIndicator();
     createLiveTranscriptPanel();
     
-    // Check if already recording
-    chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATUS' }, (response) => {
-      if (response && response.isRecording) {
-        handleRecordingStarted(response.currentMeeting);
-      }
-    });
+    // Check recording and auth status
+    checkStatus();
   }
+}
+
+// Check status from background
+function checkStatus() {
+  chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATUS' }, (response) => {
+    if (response) {
+      isRecording = response.isRecording;
+      isAuthenticated = response.isAuthenticated;
+      currentMeeting = response.currentMeeting;
+      
+      if (isRecording && currentMeeting) {
+        handleRecordingStarted(currentMeeting);
+      }
+      
+      updateRecordingIndicator();
+    }
+  });
 }
 
 // Detect meeting platform
@@ -146,7 +162,7 @@ function cleanupMeetingInterface() {
   }
 }
 
-// Create recording indicator
+// Create recording indicator with enhanced auth status
 function createRecordingIndicator() {
   if (indicator) return;
 
@@ -163,7 +179,7 @@ function createRecordingIndicator() {
         </svg>
       </div>
       <div class="mi-indicator-text">Meeting Intelligence</div>
-      <div class="mi-indicator-status">Ready</div>
+      <div class="mi-indicator-status">Checking...</div>
       <button class="mi-indicator-button" id="mi-record-button">
         <span class="mi-button-text">Open Extension</span>
       </button>
@@ -175,7 +191,7 @@ function createRecordingIndicator() {
     </div>
   `;
 
-  // Add styles
+  // Add enhanced styles for auth and real-time features
   const style = document.createElement('style');
   style.textContent = `
     .meeting-intelligence-indicator {
@@ -192,7 +208,7 @@ function createRecordingIndicator() {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       font-size: 14px;
       color: #374151;
-      min-width: 280px;
+      min-width: 320px;
       transition: all 0.3s ease;
     }
     
@@ -207,6 +223,15 @@ function createRecordingIndicator() {
       flex-shrink: 0;
     }
     
+    .mi-indicator-icon.authenticated {
+      color: #10b981;
+    }
+    
+    .mi-indicator-icon.recording {
+      color: #ef4444;
+      animation: pulse 2s infinite;
+    }
+    
     .mi-indicator-text {
       font-weight: 600;
       flex-grow: 1;
@@ -215,6 +240,20 @@ function createRecordingIndicator() {
     .mi-indicator-status {
       font-size: 12px;
       color: #6b7280;
+      min-width: 80px;
+    }
+    
+    .mi-indicator-status.authenticated {
+      color: #10b981;
+    }
+    
+    .mi-indicator-status.not-authenticated {
+      color: #ef4444;
+    }
+    
+    .mi-indicator-status.recording {
+      color: #ef4444;
+      animation: pulse 2s infinite;
     }
     
     .mi-indicator-button, .mi-transcript-button {
@@ -252,18 +291,26 @@ function createRecordingIndicator() {
       background: #dc2626;
     }
     
+    .mi-indicator-button.not-authenticated {
+      background: #f59e0b;
+    }
+    
+    .mi-indicator-button.not-authenticated:hover {
+      background: #d97706;
+    }
+    
     @keyframes pulse {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.7; }
     }
     
-    /* Live Transcript Panel Styles */
+    /* Enhanced Live Transcript Panel Styles */
     .meeting-intelligence-transcript-panel {
       position: fixed;
       top: 80px;
       right: 20px;
-      width: 400px;
-      max-height: 600px;
+      width: 450px;
+      max-height: 700px;
       background: white;
       border-radius: 16px;
       box-shadow: 0 20px 50px rgba(0, 0, 0, 0.15);
@@ -281,7 +328,7 @@ function createRecordingIndicator() {
     }
     
     .mi-panel-header {
-      background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
       color: white;
       padding: 16px 20px;
       display: flex;
@@ -298,11 +345,19 @@ function createRecordingIndicator() {
     }
     
     .mi-recording-dot {
-      width: 10px;
-      height: 10px;
+      width: 12px;
+      height: 12px;
       background: #ef4444;
       border-radius: 50%;
       animation: pulse 2s infinite;
+    }
+    
+    .mi-chunk-counter {
+      background: rgba(255, 255, 255, 0.2);
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 500;
     }
     
     .mi-panel-controls {
@@ -330,7 +385,7 @@ function createRecordingIndicator() {
     }
     
     .mi-panel-content {
-      height: 500px;
+      height: 550px;
       overflow: hidden;
       display: flex;
       flex-direction: column;
@@ -356,7 +411,7 @@ function createRecordingIndicator() {
     }
     
     .mi-tab.active {
-      color: #3b82f6;
+      color: #10b981;
       background: white;
     }
     
@@ -367,7 +422,7 @@ function createRecordingIndicator() {
       left: 0;
       right: 0;
       height: 2px;
-      background: #3b82f6;
+      background: #10b981;
     }
     
     .mi-tab-content {
@@ -382,15 +437,43 @@ function createRecordingIndicator() {
       color: #374151;
       white-space: pre-wrap;
       word-wrap: break-word;
-      background: #f8fafc;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
       padding: 16px;
       border-radius: 12px;
-      min-height: 200px;
-      max-height: 350px;
+      min-height: 300px;
+      max-height: 400px;
       overflow-y: auto;
       font-family: ui-monospace, 'SF Mono', monospace;
       font-size: 13px;
-      line-height: 1.5;
+      line-height: 1.6;
+    }
+    
+    .mi-transcript-chunk {
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #dcfce7;
+    }
+    
+    .mi-transcript-chunk:last-child {
+      border-bottom: none;
+      margin-bottom: 0;
+    }
+    
+    .mi-chunk-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 11px;
+      color: #059669;
+      font-weight: 600;
+    }
+    
+    .mi-chunk-time {
+      background: rgba(16, 185, 129, 0.1);
+      padding: 2px 6px;
+      border-radius: 8px;
     }
     
     .mi-action-items {
@@ -406,6 +489,7 @@ function createRecordingIndicator() {
       padding: 16px;
       position: relative;
       overflow: hidden;
+      animation: slideInFade 0.5s ease;
     }
     
     .mi-action-item::before {
@@ -440,57 +524,39 @@ function createRecordingIndicator() {
       padding: 4px 8px;
       border-radius: 12px;
       font-weight: 500;
+      white-space: nowrap;
     }
     
     .mi-action-item-assignee {
       color: #0369a1;
       font-size: 12px;
       font-weight: 500;
-    }
-    
-    .mi-action-item-confidence {
-      color: #059669;
-      font-size: 11px;
-      font-weight: 500;
       margin-top: 4px;
     }
     
-    .mi-speakers-list {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-    
-    .mi-speaker-item {
-      background: #f8fafc;
-      border-radius: 12px;
-      padding: 16px;
-      border: 1px solid #e2e8f0;
-    }
-    
-    .mi-speaker-name {
+    .mi-action-item-priority {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 8px;
+      font-size: 10px;
       font-weight: 600;
-      color: #374151;
-      margin-bottom: 8px;
-      font-size: 14px;
+      text-transform: uppercase;
+      margin-top: 4px;
     }
     
-    .mi-speaker-stats {
-      display: flex;
-      gap: 16px;
-      font-size: 12px;
-      color: #64748b;
+    .mi-action-item-priority.high {
+      background: #fee2e2;
+      color: #991b1b;
     }
     
-    .mi-speaker-stat {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
+    .mi-action-item-priority.medium {
+      background: #fef3c7;
+      color: #92400e;
     }
     
-    .mi-speaker-stat-label {
-      font-weight: 500;
-      color: #374151;
+    .mi-action-item-priority.low {
+      background: #ecfdf5;
+      color: #065f46;
     }
     
     .mi-empty-state {
@@ -498,7 +564,7 @@ function createRecordingIndicator() {
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 200px;
+      height: 250px;
       color: #9ca3af;
       text-align: center;
     }
@@ -533,10 +599,6 @@ function createRecordingIndicator() {
     }
     
     /* Animation for new items */
-    .mi-action-item.new {
-      animation: slideInFade 0.5s ease;
-    }
-    
     @keyframes slideInFade {
       from { 
         opacity: 0; 
@@ -546,6 +608,24 @@ function createRecordingIndicator() {
         opacity: 1; 
         transform: translateY(0); 
       }
+    }
+    
+    .mi-processing-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #059669;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 8px 0;
+    }
+    
+    .mi-processing-dot {
+      width: 8px;
+      height: 8px;
+      background: #10b981;
+      border-radius: 50%;
+      animation: pulse 1.5s infinite;
     }
   `;
   
@@ -560,7 +640,7 @@ function createRecordingIndicator() {
   transcriptButton.addEventListener('click', toggleTranscriptPanel);
 }
 
-// Create live transcript panel
+// Create enhanced live transcript panel
 function createLiveTranscriptPanel() {
   if (transcriptPanel) return;
 
@@ -573,6 +653,7 @@ function createLiveTranscriptPanel() {
       <div class="mi-panel-title">
         <div class="mi-recording-dot" id="mi-recording-dot" style="display: none;"></div>
         <span>Live Transcript</span>
+        <div class="mi-chunk-counter" id="mi-chunk-counter" style="display: none;">0 chunks</div>
       </div>
       <div class="mi-panel-controls">
         <button class="mi-panel-btn" id="mi-minimize-btn" title="Minimize">
@@ -591,7 +672,7 @@ function createLiveTranscriptPanel() {
       <div class="mi-panel-tabs">
         <button class="mi-tab active" id="transcript-tab">Transcript</button>
         <button class="mi-tab" id="action-items-tab">Action Items</button>
-        <button class="mi-tab" id="speakers-tab">Speakers</button>
+        <button class="mi-tab" id="analytics-tab">Analytics</button>
       </div>
       <div class="mi-tab-content" id="transcript-content">
         <div class="mi-transcript-content" id="mi-live-transcript">
@@ -601,6 +682,7 @@ function createLiveTranscriptPanel() {
               <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
             </svg>
             <div>Start recording to see live transcript</div>
+            <div style="font-size: 12px; color: #9ca3af; margin-top: 4px;">35-second chunks will be processed in real-time</div>
           </div>
         </div>
       </div>
@@ -614,13 +696,13 @@ function createLiveTranscriptPanel() {
           </div>
         </div>
       </div>
-      <div class="mi-tab-content" id="speakers-content" style="display: none;">
-        <div class="mi-speakers-list" id="mi-speakers-list">
+      <div class="mi-tab-content" id="analytics-content" style="display: none;">
+        <div id="mi-analytics-data">
           <div class="mi-empty-state">
             <svg class="mi-empty-icon" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z"/>
+              <path d="M22,21H2V3H4V19H6V10H10V19H12V6H16V19H18V14H22V21Z"/>
             </svg>
-            <div>Speaker analysis will appear during recording</div>
+            <div>Analytics will appear during recording</div>
           </div>
         </div>
       </div>
@@ -681,38 +763,65 @@ function closeTranscriptPanel() {
   }
 }
 
-// Update recording indicator
+// Update recording indicator with auth status
 function updateRecordingIndicator() {
   if (!indicator) return;
 
   const statusEl = indicator.querySelector('.mi-indicator-status');
   const buttonEl = indicator.querySelector('#mi-record-button');
   const buttonText = buttonEl.querySelector('.mi-button-text');
+  const iconEl = indicator.querySelector('.mi-indicator-icon');
   const recordingDot = document.querySelector('#mi-recording-dot');
+  const chunkCounter = document.querySelector('#mi-chunk-counter');
 
+  // Update based on states
   if (isRecording) {
     statusEl.textContent = 'Recording';
+    statusEl.className = 'mi-indicator-status recording';
     buttonText.textContent = 'Recording...';
     buttonEl.classList.add('recording');
-    if (recordingDot) recordingDot.style.display = 'block';
+    iconEl.classList.add('recording');
+    if (recordingDot) {
+      recordingDot.style.display = 'block';
+    }
+    if (chunkCounter) {
+      chunkCounter.style.display = 'block';
+      chunkCounter.textContent = `${chunkCounter} chunks`;
+    }
+  } else if (!isAuthenticated) {
+    statusEl.textContent = 'Not Logged In';
+    statusEl.className = 'mi-indicator-status not-authenticated';
+    buttonText.textContent = 'Login Required';
+    buttonEl.classList.add('not-authenticated');
+    iconEl.className = 'mi-indicator-icon';
+    if (recordingDot) recordingDot.style.display = 'none';
+    if (chunkCounter) chunkCounter.style.display = 'none';
   } else {
     statusEl.textContent = 'Ready';
+    statusEl.className = 'mi-indicator-status authenticated';
     buttonText.textContent = 'Open Extension';
-    buttonEl.classList.remove('recording');
+    buttonEl.className = 'mi-indicator-button';
+    iconEl.classList.add('authenticated');
     if (recordingDot) recordingDot.style.display = 'none';
+    if (chunkCounter) chunkCounter.style.display = 'none';
   }
 }
 
 // Handle record button click
 function handleRecordButtonClick() {
-  // Don't handle recording from content script - redirect to extension popup
-  showNotification('Opening extension popup to start recording...', 'info');
+  if (!isAuthenticated) {
+    showNotification('Please log in to the dashboard first', 'error');
+    // Open frontend for login
+    window.open('http://localhost:3000', '_blank');
+    return;
+  }
   
-  // Send message to background to open popup
+  // Open extension popup for recording
+  showNotification('Opening extension popup to start recording...', 'info');
   chrome.runtime.sendMessage({ type: 'OPEN_POPUP' });
 }
 
-// Update live transcript
+// Enhanced live transcript update with chunk support
 function updateLiveTranscript(transcriptData) {
   const transcriptEl = document.getElementById('mi-live-transcript');
   
@@ -720,26 +829,73 @@ function updateLiveTranscript(transcriptData) {
     // Clear empty state if this is the first transcript
     if (transcriptEl.querySelector('.mi-empty-state')) {
       transcriptEl.innerHTML = '';
+      liveTranscript = '';
     }
     
-    // Add new transcript content
-    const content = typeof transcriptData === 'string' ? transcriptData : transcriptData.content;
-    if (content) {
-      liveTranscript += content + '\n';
-      transcriptEl.textContent = liveTranscript;
-      
-      // Auto scroll to bottom
-      transcriptEl.scrollTop = transcriptEl.scrollHeight;
-      
-      // Auto-open panel if not open and recording
-      if (isRecording && !isTranscriptPanelOpen) {
-        openTranscriptPanel();
-      }
+    // Add processing indicator if needed
+    if (!transcriptEl.querySelector('.mi-processing-indicator')) {
+      const processingDiv = document.createElement('div');
+      processingDiv.className = 'mi-processing-indicator';
+      processingDiv.innerHTML = `
+        <div class="mi-processing-dot"></div>
+        <span>Processing 35-second chunks...</span>
+      `;
+      transcriptEl.appendChild(processingDiv);
     }
+    
+    // Handle different types of transcript updates
+    if (typeof transcriptData === 'string') {
+      // Simple text update
+      addTranscriptChunk(transcriptData);
+    } else if (transcriptData.content) {
+      // Structured transcript data
+      addTranscriptChunk(transcriptData.content, transcriptData.chunkIndex, transcriptData.timestamp);
+    }
+    
+    // Auto scroll to bottom
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    
+    // Auto-open panel if not open and recording
+    if (isRecording && !isTranscriptPanelOpen) {
+      openTranscriptPanel();
+    }
+    
+    lastTranscriptUpdate = Date.now();
   }
 }
 
-// Update action items
+// Add transcript chunk with timestamp and chunk info
+function addTranscriptChunk(content, chunkIndex, timestamp) {
+  const transcriptEl = document.getElementById('mi-live-transcript');
+  
+  if (content && content.trim()) {
+    const chunkDiv = document.createElement('div');
+    chunkDiv.className = 'mi-transcript-chunk';
+    
+    const currentTime = timestamp ? new Date(timestamp) : new Date();
+    const chunkNumber = chunkIndex !== undefined ? chunkIndex : chunkCounter++;
+    
+    chunkDiv.innerHTML = `
+      <div class="mi-chunk-header">
+        <span>Chunk ${chunkNumber + 1}</span>
+        <span class="mi-chunk-time">${currentTime.toLocaleTimeString()}</span>
+      </div>
+      <div class="mi-chunk-content">${content}</div>
+    `;
+    
+    transcriptEl.appendChild(chunkDiv);
+    
+    // Update chunk counter in header
+    const chunkCounterEl = document.querySelector('#mi-chunk-counter');
+    if (chunkCounterEl) {
+      chunkCounterEl.textContent = `${chunkNumber + 1} chunks`;
+    }
+    
+    liveTranscript += content + '\n';
+  }
+}
+
+// Enhanced action items update
 function updateActionItems(newActionItem) {
   const actionItemsList = document.getElementById('mi-action-items-list');
   
@@ -752,7 +908,7 @@ function updateActionItems(newActionItem) {
     actionItems.push(newActionItem);
     
     const itemEl = document.createElement('div');
-    itemEl.className = 'mi-action-item new';
+    itemEl.className = 'mi-action-item';
     
     const timeAgo = new Date(newActionItem.timestamp || Date.now()).toLocaleTimeString();
     
@@ -762,15 +918,16 @@ function updateActionItems(newActionItem) {
         <div class="mi-action-item-time">${timeAgo}</div>
       </div>
       ${newActionItem.assignee ? `<div class="mi-action-item-assignee">📋 ${newActionItem.assignee}</div>` : ''}
-      ${newActionItem.confidence ? `<div class="mi-action-item-confidence">🎯 ${Math.round(newActionItem.confidence * 100)}% confidence</div>` : ''}
+      ${newActionItem.priority ? `<div class="mi-action-item-priority ${newActionItem.priority}">${newActionItem.priority}</div>` : ''}
     `;
     
     actionItemsList.appendChild(itemEl);
     
-    // Remove 'new' class after animation
-    setTimeout(() => {
-      itemEl.classList.remove('new');
-    }, 500);
+    // Update action items tab with count
+    const actionItemsTab = document.querySelector('#action-items-tab');
+    if (actionItemsTab) {
+      actionItemsTab.textContent = `Action Items (${actionItems.length})`;
+    }
   }
 }
 
@@ -778,6 +935,7 @@ function updateActionItems(newActionItem) {
 function handleRecordingStarted(meeting) {
   isRecording = true;
   currentMeeting = meeting;
+  chunkCounter = 0;
   updateRecordingIndicator();
   
   // Clear previous session data
@@ -787,7 +945,12 @@ function handleRecordingStarted(meeting) {
   // Reset transcript display
   const transcriptEl = document.getElementById('mi-live-transcript');
   if (transcriptEl) {
-    transcriptEl.innerHTML = '<div style="color: #10b981; font-weight: 500;">🎤 Recording started... Listening for speech...</div>';
+    transcriptEl.innerHTML = `
+      <div class="mi-processing-indicator">
+        <div class="mi-processing-dot"></div>
+        <span>🎤 Recording started... Listening for speech (35s chunks)...</span>
+      </div>
+    `;
   }
   
   // Reset action items display
@@ -796,10 +959,16 @@ function handleRecordingStarted(meeting) {
     actionItemsList.innerHTML = '<div class="mi-empty-state"><div>Action items will appear here automatically</div></div>';
   }
   
+  // Reset action items tab
+  const actionItemsTab = document.querySelector('#action-items-tab');
+  if (actionItemsTab) {
+    actionItemsTab.textContent = 'Action Items';
+  }
+  
   // Auto-open transcript panel
   openTranscriptPanel();
   
-  showNotification('🎤 Recording started - Live transcript will appear here', 'success');
+  showNotification('🎤 Recording started - 35-second chunks will be processed in real-time', 'success');
 }
 
 // Handle recording stopped
@@ -811,12 +980,17 @@ function handleRecordingStopped(meeting) {
   // Update transcript to show completion
   const transcriptEl = document.getElementById('mi-live-transcript');
   if (transcriptEl && !transcriptEl.querySelector('.mi-empty-state')) {
-    liveTranscript += '\n\n🛑 Recording stopped. Processing complete.';
-    transcriptEl.textContent = liveTranscript;
+    const completionDiv = document.createElement('div');
+    completionDiv.className = 'mi-processing-indicator';
+    completionDiv.innerHTML = `
+      <div class="mi-processing-dot" style="background: #10b981;"></div>
+      <span>🛑 Recording stopped. Processing final chunks...</span>
+    `;
+    transcriptEl.appendChild(completionDiv);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
   
-  showNotification('🛑 Recording stopped - Transcript saved', 'success');
+  showNotification('🛑 Recording stopped - Final processing in progress', 'success');
 }
 
 // Show notification
@@ -899,6 +1073,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('Content script received message:', message.type);
 
   switch (message.type) {
+    case 'AUTH_STATUS_CHANGED':
+      isAuthenticated = message.isAuthenticated;
+      updateRecordingIndicator();
+      break;
+
     case 'RECORDING_STARTED':
       handleRecordingStarted(message.meeting);
       break;
@@ -912,7 +1091,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
 
     case 'ACTION_ITEM_DETECTED':
-      updateActionItems(message.data);
+      updateActionItems(message.data.actionItem || message.data);
+      break;
+
+    case 'CHUNK_PROCESSED':
+      console.log('Chunk processed:', message.data);
+      // Could add visual feedback here
       break;
 
     case 'PROCESSING_STATUS':
@@ -931,4 +1115,4 @@ if (document.readyState === 'loading') {
   initialize();
 }
 
-console.log('✅ Meeting Intelligence: Enhanced content script with live transcript panel initialized');
+console.log('✅ Meeting Intelligence: Enhanced content script with real-time 35-second chunk processing initialized');
