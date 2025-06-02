@@ -185,7 +185,7 @@ class ErrorBoundary extends Component {
                   Oops! Something went wrong
                 </h1>
                 <p className="text-gray-600">
-                  We're sorry for the inconvenience. An unexpected error occurred.
+                  We&apos;re sorry for the inconvenience. An unexpected error occurred.
                 </p>
               </div>
 

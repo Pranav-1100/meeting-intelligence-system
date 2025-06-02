@@ -12,12 +12,12 @@ import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCXwWdXQvY01_kycHrGCZNwYs-Hz2tHBv0",
-  authDomain: "meeting-intelligence-94bfb.firebaseapp.com",
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
   projectId: "meeting-intelligence-94bfb",
   storageBucket: "meeting-intelligence-94bfb.firebasestorage.app",
   messagingSenderId: "876426834587",
-  appId: "1:876426834587:web:93d29706f351aceb53cc3e",
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
   measurementId: "G-X6120NH7BV"
 };
 

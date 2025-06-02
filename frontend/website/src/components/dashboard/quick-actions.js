@@ -169,7 +169,7 @@ export default function QuickActions({
                 Ready for Live Recording
               </h4>
               <p className="text-xs text-blue-700">
-                Click "Start Recording" to begin capturing audio from your current tab. 
+                Click &quot;Start Recording&quot; to begin capturing audio from your current tab. 
                 The system will automatically transcribe speech and identify action items in real-time.
               </p>
             </div>

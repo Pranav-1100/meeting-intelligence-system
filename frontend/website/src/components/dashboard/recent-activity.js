@@ -270,7 +270,7 @@ export default function RecentActivity() {
                         </span>
                       )}
                       {activity.metadata.meetingTitle && (
-                        <span>from "{activity.metadata.meetingTitle}"</span>
+                        <span>from &quot;{activity.metadata.meetingTitle}&quot;</span>
                       )}
                     </div>
                   )}
