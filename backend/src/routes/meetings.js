@@ -63,44 +63,44 @@ router.get('/', asyncHandler(async (req, res) => {
   const db = getDb();
   const offset = (page - 1) * limit;
 
-  // Build query with filters
-  let whereConditions = ['user_id = ?'];
+  // Build query with filters - specify table alias for all columns
+  let whereConditions = ['m.user_id = ?'];
   let queryParams = [userId];
 
   if (status) {
-    whereConditions.push('status = ?');
+    whereConditions.push('m.status = ?');
     queryParams.push(status);
   }
 
   if (type) {
-    whereConditions.push('meeting_type = ?');
+    whereConditions.push('m.meeting_type = ?');
     queryParams.push(type);
   }
 
   if (search) {
-    whereConditions.push('(title LIKE ? OR description LIKE ?)');
+    whereConditions.push('(m.title LIKE ? OR m.description LIKE ?)');
     queryParams.push(`%${search}%`, `%${search}%`);
   }
 
   if (startDate) {
-    whereConditions.push('created_at >= ?');
+    whereConditions.push('m.created_at >= ?');
     queryParams.push(startDate);
   }
 
   if (endDate) {
-    whereConditions.push('created_at <= ?');
+    whereConditions.push('m.created_at <= ?');
     queryParams.push(endDate);
   }
 
   const whereClause = whereConditions.join(' AND ');
-  const orderClause = `ORDER BY ${sortBy} ${sortOrder}`;
+  const orderClause = `ORDER BY m.${sortBy} ${sortOrder}`;
 
   // Get meetings
   const meetings = db.prepare(`
     SELECT 
       m.*,
-      COUNT(ai.id) as action_items_count,
-      COUNT(mp.id) as participants_count
+      COUNT(DISTINCT ai.id) as action_items_count,
+      COUNT(DISTINCT mp.id) as participants_count
     FROM meetings m
     LEFT JOIN action_items ai ON m.id = ai.meeting_id
     LEFT JOIN meeting_participants mp ON m.id = mp.meeting_id
@@ -112,7 +112,7 @@ router.get('/', asyncHandler(async (req, res) => {
 
   // Get total count
   const totalCount = db.prepare(`
-    SELECT COUNT(*) as count FROM meetings WHERE ${whereClause}
+    SELECT COUNT(*) as count FROM meetings m WHERE ${whereClause}
   `).get(queryParams).count;
 
   // Parse metadata for each meeting
@@ -133,6 +133,7 @@ router.get('/', asyncHandler(async (req, res) => {
     }
   });
 }));
+
 
 /**
  * GET /api/meetings/:id
