@@ -6,11 +6,11 @@
     
     "permissions": [
       "tabCapture",
-      "activeTab",
+      "activeTab", 
       "storage",
-      "background",
       "notifications",
-      "scripting"
+      "scripting",
+      "tabs"
     ],
     
     "host_permissions": [
@@ -18,13 +18,12 @@
       "*://*.zoom.us/*",
       "*://teams.microsoft.com/*",
       "*://*.webex.com/*",
-      "*://localhost:8000/*",
+      "http://localhost:8000/*",
       "http://localhost:3000/*"
     ],
   
     "background": {
-      "service_worker": "background.js",
-      "type": "module"
+      "service_worker": "background.js"
     },
   
     "content_scripts": [
@@ -36,7 +35,6 @@
           "*://*.webex.com/*"
         ],
         "js": ["content.js"],
-        "css": ["content.css"],
         "run_at": "document_end"
       }
     ],
@@ -63,8 +61,6 @@
       {
         "resources": [
           "overlay.html",
-          "overlay.css",
-          "overlay.js",
           "icons/*"
         ],
         "matches": [
@@ -75,10 +71,6 @@
         ]
       }
     ],
-  
-    "content_security_policy": {
-      "extension_pages": "script-src 'self'; object-src 'self';"
-    },
   
     "commands": {
       "start-recording": {
@@ -96,12 +88,6 @@
         "description": "Stop meeting recording"
       }
     },
-  
-    "author": {
-      "email": "support@meetingintelligence.ai"
-    },
-  
-    "homepage_url": "https://meetingintelligence.ai",
   
     "minimum_chrome_version": "110"
   }

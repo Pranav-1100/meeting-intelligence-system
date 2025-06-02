@@ -1,10 +1,10 @@
-console.log('Meeting Intelligence: Background script loaded');
+// Meeting Intelligence Background Script - Manifest V3 Compatible
+console.log('Meeting Intelligence: Background service worker loaded');
 
 // Configuration
 const CONFIG = {
   API_BASE_URL: 'http://localhost:8000',
   WS_BASE_URL: 'ws://localhost:8000',
-  CHUNK_DURATION: 90, // seconds
   SUPPORTED_PLATFORMS: [
     'meet.google.com',
     'zoom.us',
@@ -13,19 +13,16 @@ const CONFIG = {
   ]
 };
 
-// Global state
+// Global state (background script only handles state, not media capture)
 let isRecording = false;
 let currentMeeting = null;
-let mediaStream = null;
-let mediaRecorder = null;
-let audioChunks = [];
-let chunkIndex = 0;
 let websocket = null;
 let authToken = null;
+let currentTabId = null;
 
 // Initialize extension
 chrome.runtime.onInstalled.addListener((details) => {
-  console.log('Meeting Intelligence: Extension installed/updated', details);
+  console.log('Meeting Intelligence: Extension installed/updated', details.reason);
   
   // Set default settings
   chrome.storage.local.set({
@@ -38,18 +35,17 @@ chrome.runtime.onInstalled.addListener((details) => {
     }
   });
 
-  // Show welcome notification
   if (details.reason === 'install') {
     chrome.notifications.create({
       type: 'basic',
       iconUrl: 'icons/icon48.png',
-      title: 'Meeting Intelligence',
-      message: 'Extension installed! Visit a meeting platform to get started.'
+      title: 'Meeting Intelligence Installed',
+      message: 'Extension ready! Visit meet.google.com to start recording meetings.'
     });
   }
 });
 
-// Handle tab updates to detect meeting platforms
+// Detect meeting platforms and inject content scripts
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.status === 'complete' && tab.url) {
     const isMeetingPlatform = CONFIG.SUPPORTED_PLATFORMS.some(platform => 
@@ -57,34 +53,35 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     );
 
     if (isMeetingPlatform) {
-      console.log('Meeting Intelligence: Meeting platform detected', tab.url);
+      console.log('Meeting platform detected:', tab.url);
       
-      // Inject content script if needed
       try {
+        // Inject content script
         await chrome.scripting.executeScript({
           target: { tabId },
           files: ['content.js']
         });
+        
+        // Update badge
+        chrome.action.setBadgeText({
+          tabId,
+          text: isRecording ? 'REC' : '●'
+        });
+        chrome.action.setBadgeBackgroundColor({
+          tabId,
+          color: isRecording ? '#ef4444' : '#3b82f6'
+        });
+        
       } catch (error) {
-        console.log('Content script already injected or failed:', error);
+        console.log('Content script injection failed:', error.message);
       }
-
-      // Update badge
-      chrome.action.setBadgeText({
-        tabId,
-        text: isRecording ? 'REC' : '●'
-      });
-      chrome.action.setBadgeBackgroundColor({
-        tabId,
-        color: isRecording ? '#ef4444' : '#3b82f6'
-      });
     }
   }
 });
 
-// Handle messages from popup and content scripts
+// Message handling - UPDATED for popup-based recording
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('Background received message:', message);
+  console.log('Background received message:', message.type);
 
   switch (message.type) {
     case 'GET_RECORDING_STATUS':
@@ -95,13 +92,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       break;
 
-    case 'START_RECORDING':
-      handleStartRecording(message.data, sendResponse);
-      return true; // Async response
+    case 'RECORDING_STARTED_FROM_POPUP':
+      handleRecordingStartedFromPopup(message.data, sendResponse);
+      return true; // Keep message channel open
 
-    case 'STOP_RECORDING':
-      handleStopRecording(sendResponse);
-      return true; // Async response
+    case 'RECORDING_STOPPED_FROM_POPUP':
+      handleRecordingStoppedFromPopup(message.data, sendResponse);
+      return true;
+
+    case 'AUDIO_CHUNK_FROM_POPUP':
+      handleAudioChunkFromPopup(message.data, sendResponse);
+      break;
 
     case 'SET_AUTH_TOKEN':
       authToken = message.token;
@@ -112,78 +113,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ token: authToken });
       break;
 
-    case 'DETECT_MEETING_PLATFORM':
-      if (sender.tab) {
-        const platform = detectPlatform(sender.tab.url);
-        sendResponse({ platform });
-      }
-      break;
-
     default:
       console.log('Unknown message type:', message.type);
+      sendResponse({ error: 'Unknown message type' });
   }
 });
 
-// Detect meeting platform from URL
-function detectPlatform(url) {
-  if (url.includes('meet.google.com')) return 'google-meet';
-  if (url.includes('zoom.us')) return 'zoom';
-  if (url.includes('teams.microsoft.com')) return 'teams';
-  if (url.includes('webex.com')) return 'webex';
-  return 'unknown';
-}
-
-// Start recording
-async function handleStartRecording(data, sendResponse) {
+// Handle recording started from popup
+async function handleRecordingStartedFromPopup(data, sendResponse) {
   try {
-    if (isRecording) {
-      throw new Error('Recording already in progress');
-    }
-
-    console.log('Starting recording with data:', data);
-
-    // Get active tab
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) {
-      throw new Error('No active tab found');
-    }
-
-    // Start tab capture
-    mediaStream = await chrome.tabCapture.capture({
-      audio: true,
-      video: false
-    });
-
-    if (!mediaStream) {
-      throw new Error('Failed to capture tab audio');
-    }
-
-    // Connect to WebSocket
-    await connectWebSocket();
-
-    // Start media recorder
-    startMediaRecorder();
-
+    console.log('Recording started from popup:', data.meeting);
+    
     // Update state
     isRecording = true;
-    currentMeeting = {
-      id: `meeting-${Date.now()}`,
-      title: data.title || `Meeting ${new Date().toLocaleDateString()}`,
-      platform: detectPlatform(tab.url),
-      startTime: Date.now(),
-      tabId: tab.id
-    };
-
+    currentMeeting = data.meeting;
+    currentTabId = data.meeting.tabId;
+    
+    // Connect to WebSocket for backend communication
+    try {
+      await connectWebSocket();
+    } catch (wsError) {
+      console.warn('WebSocket connection failed:', wsError.message);
+    }
+    
     // Update badge
-    chrome.action.setBadgeText({
-      tabId: tab.id,
-      text: 'REC'
-    });
-    chrome.action.setBadgeBackgroundColor({
-      tabId: tab.id,
-      color: '#ef4444'
-    });
-
+    if (currentTabId) {
+      chrome.action.setBadgeText({
+        tabId: currentTabId,
+        text: 'REC'
+      });
+      chrome.action.setBadgeBackgroundColor({
+        tabId: currentTabId,
+        color: '#ef4444'
+      });
+    }
+    
     // Send start message to backend
     if (websocket && websocket.readyState === WebSocket.OPEN) {
       websocket.send(JSON.stringify({
@@ -191,186 +155,143 @@ async function handleStartRecording(data, sendResponse) {
         data: currentMeeting
       }));
     }
-
+    
     // Notify content script
-    chrome.tabs.sendMessage(tab.id, {
-      type: 'RECORDING_STARTED',
-      meeting: currentMeeting
-    });
-
-    // Show notification
+    if (currentTabId) {
+      chrome.tabs.sendMessage(currentTabId, {
+        type: 'RECORDING_STARTED',
+        meeting: currentMeeting
+      }).catch((error) => {
+        console.log('Content script notification failed:', error.message);
+      });
+    }
+    
+    // Show success notification
     chrome.notifications.create({
       type: 'basic',
       iconUrl: 'icons/icon48.png',
-      title: 'Recording Started',
-      message: `Recording meeting: ${currentMeeting.title}`
+      title: 'Recording Started ✅',
+      message: `Recording: ${currentMeeting.title}`
     });
-
-    sendResponse({ success: true, meeting: currentMeeting });
-
+    
+    sendResponse({ success: true });
+    
   } catch (error) {
-    console.error('Failed to start recording:', error);
+    console.error('Failed to handle recording start:', error);
     sendResponse({ success: false, error: error.message });
   }
 }
 
-// Stop recording
-async function handleStopRecording(sendResponse) {
+// Handle recording stopped from popup
+async function handleRecordingStoppedFromPopup(data, sendResponse) {
   try {
-    if (!isRecording) {
-      throw new Error('No recording in progress');
-    }
-
-    console.log('Stopping recording');
-
-    // Stop media recorder
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      mediaRecorder.stop();
-    }
-
-    // Stop media stream
-    if (mediaStream) {
-      mediaStream.getTracks().forEach(track => track.stop());
-      mediaStream = null;
-    }
-
+    console.log('Recording stopped from popup:', data.meetingId);
+    
     // Send stop message to backend
     if (websocket && websocket.readyState === WebSocket.OPEN) {
       websocket.send(JSON.stringify({
         type: 'end_meeting',
-        data: { meetingId: currentMeeting.id }
+        data: { meetingId: data.meetingId }
       }));
     }
-
-    // Update state
+    
+    // Save meeting reference
     const meeting = currentMeeting;
+    
+    // Reset state
     isRecording = false;
     currentMeeting = null;
-
+    const tabId = currentTabId;
+    currentTabId = null;
+    
     // Update badge
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab) {
+    if (tabId) {
       chrome.action.setBadgeText({
-        tabId: tab.id,
+        tabId,
         text: '●'
       });
       chrome.action.setBadgeBackgroundColor({
-        tabId: tab.id,
+        tabId,
         color: '#3b82f6'
       });
-
-      // Notify content script
-      chrome.tabs.sendMessage(tab.id, {
+    }
+    
+    // Notify content script
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
         type: 'RECORDING_STOPPED',
         meeting
+      }).catch((error) => {
+        console.log('Content script notification failed:', error.message);
       });
     }
-
+    
     // Show notification
     chrome.notifications.create({
       type: 'basic',
       iconUrl: 'icons/icon48.png',
-      title: 'Recording Stopped',
-      message: 'Meeting recording saved and processing started'
+      title: 'Recording Stopped ⏹️',
+      message: 'Meeting recording saved successfully'
     });
-
+    
     sendResponse({ success: true, meeting });
-
+    
   } catch (error) {
-    console.error('Failed to stop recording:', error);
+    console.error('Failed to handle recording stop:', error);
     sendResponse({ success: false, error: error.message });
   }
 }
 
-// Start media recorder
-function startMediaRecorder() {
-  audioChunks = [];
-  chunkIndex = 0;
-
-  mediaRecorder = new MediaRecorder(mediaStream, {
-    mimeType: 'audio/webm;codecs=opus'
-  });
-
-  mediaRecorder.addEventListener('dataavailable', (event) => {
-    if (event.data.size > 0) {
-      audioChunks.push(event.data);
-    }
-  });
-
-  mediaRecorder.addEventListener('stop', () => {
-    console.log('Media recorder stopped');
-    processAudioChunks();
-  });
-
-  // Start recording with time slices
-  mediaRecorder.start(CONFIG.CHUNK_DURATION * 1000);
-
-  // Handle continuous recording with chunks
-  setInterval(() => {
-    if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
-      mediaRecorder.stop();
-      setTimeout(() => {
-        if (isRecording && mediaStream) {
-          startMediaRecorder();
-        }
-      }, 100);
-    }
-  }, CONFIG.CHUNK_DURATION * 1000);
-}
-
-// Process audio chunks
-async function processAudioChunks() {
-  if (audioChunks.length === 0) return;
-
+// Handle audio chunk from popup
+function handleAudioChunkFromPopup(data, sendResponse) {
   try {
-    // Create blob from chunks
-    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+    console.log('Received audio chunk from popup:', data.timestamp);
     
-    // Convert to base64
-    const base64Audio = await blobToBase64(audioBlob);
-
     // Send to backend via WebSocket
     if (websocket && websocket.readyState === WebSocket.OPEN) {
       websocket.send(JSON.stringify({
         type: 'audio_chunk',
         data: {
-          meetingId: currentMeeting?.id,
-          chunkIndex: chunkIndex++,
-          audioData: base64Audio,
-          timestamp: Date.now()
+          meetingId: data.meetingId,
+          audioData: data.audioData,
+          timestamp: data.timestamp
         }
       }));
+      console.log('Forwarded audio chunk to backend');
+    } else {
+      console.warn('WebSocket not available, audio chunk not sent');
     }
-
-    // Clear chunks for next batch
-    audioChunks = [];
-
+    
+    if (sendResponse) {
+      sendResponse({ success: true });
+    }
+    
   } catch (error) {
-    console.error('Failed to process audio chunks:', error);
+    console.error('Failed to handle audio chunk:', error);
+    if (sendResponse) {
+      sendResponse({ success: false, error: error.message });
+    }
   }
 }
 
-// Convert blob to base64
-function blobToBase64(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = reader.result.split(',')[1];
-      resolve(base64);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-}
-
-// Connect to WebSocket
+// WebSocket connection for backend communication
 async function connectWebSocket() {
   return new Promise((resolve, reject) => {
     try {
+      console.log('Connecting to WebSocket:', CONFIG.WS_BASE_URL);
+      
       websocket = new WebSocket(CONFIG.WS_BASE_URL);
+      
+      const timeout = setTimeout(() => {
+        if (websocket.readyState !== WebSocket.OPEN) {
+          websocket.close();
+          reject(new Error('WebSocket connection timeout'));
+        }
+      }, 5000);
 
       websocket.onopen = () => {
-        console.log('WebSocket connected');
+        clearTimeout(timeout);
+        console.log('✅ WebSocket connected');
         
         // Authenticate if token available
         if (authToken) {
@@ -388,16 +309,17 @@ async function connectWebSocket() {
           const message = JSON.parse(event.data);
           handleWebSocketMessage(message);
         } catch (error) {
-          console.error('Failed to parse WebSocket message:', error);
+          console.error('WebSocket message parse error:', error);
         }
       };
 
-      websocket.onclose = () => {
-        console.log('WebSocket disconnected');
+      websocket.onclose = (event) => {
+        console.log('WebSocket disconnected:', event.code, event.reason);
         websocket = null;
       };
 
       websocket.onerror = (error) => {
+        clearTimeout(timeout);
         console.error('WebSocket error:', error);
         reject(error);
       };
@@ -410,7 +332,7 @@ async function connectWebSocket() {
 
 // Handle WebSocket messages
 function handleWebSocketMessage(message) {
-  console.log('WebSocket message received:', message);
+  console.log('WebSocket message received:', message.type);
 
   switch (message.type) {
     case 'transcript_update':
@@ -433,7 +355,7 @@ function handleWebSocketMessage(message) {
         type: 'basic',
         iconUrl: 'icons/icon48.png',
         title: 'Action Item Detected',
-        message: message.data.title
+        message: message.data.title || 'New action item found'
       });
       break;
 
@@ -446,78 +368,64 @@ function handleWebSocketMessage(message) {
       break;
 
     case 'error':
-      console.error('WebSocket error:', message.error);
-      // Show error notification
-      chrome.notifications.create({
-        type: 'basic',
-        iconUrl: 'icons/icon48.png',
-        title: 'Recording Error',
-        message: message.error
-      });
+      console.error('WebSocket error message:', message.error);
       break;
+
+    default:
+      console.log('Unknown WebSocket message type:', message.type);
   }
 }
 
 // Forward message to content script
-async function forwardToContentScript(message) {
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab) {
-      chrome.tabs.sendMessage(tab.id, message);
-    }
-  } catch (error) {
-    console.log('Failed to forward message to content script:', error);
+function forwardToContentScript(message) {
+  if (currentTabId) {
+    chrome.tabs.sendMessage(currentTabId, message).catch((error) => {
+      console.log('Content script forwarding failed:', error.message);
+    });
   }
 }
 
 // Handle keyboard shortcuts
 chrome.commands.onCommand.addListener(async (command) => {
   console.log('Command received:', command);
-
+  
+  // Note: Keyboard shortcuts can't trigger tabCapture due to user gesture requirement
+  // They can only trigger the popup or notify about the shortcut
+  
   switch (command) {
     case 'start-recording':
-      if (!isRecording) {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tab && CONFIG.SUPPORTED_PLATFORMS.some(platform => tab.url.includes(platform))) {
-          handleStartRecording({ title: 'Quick Recording' }, () => {});
-        }
-      }
-      break;
-
     case 'stop-recording':
-      if (isRecording) {
-        handleStopRecording(() => {});
-      }
+      // Open popup for user to manually start/stop recording
+      chrome.action.openPopup();
       break;
   }
 });
 
-// Handle extension icon click
-chrome.action.onClicked.addListener(async (tab) => {
-  // If popup is enabled, this won't fire
-  // But we can use it as fallback
-  console.log('Extension icon clicked for tab:', tab.url);
+// Cleanup on extension restart
+chrome.runtime.onStartup.addListener(() => {
+  console.log('Extension starting up, resetting state...');
+  isRecording = false;
+  currentMeeting = null;
+  currentTabId = null;
+  websocket = null;
 });
 
-// Clean up on extension suspension
+// Handle extension suspend
 chrome.runtime.onSuspend.addListener(() => {
   console.log('Extension suspending, cleaning up...');
   
-  if (isRecording) {
-    handleStopRecording(() => {});
-  }
-  
   if (websocket) {
     websocket.close();
+    websocket = null;
   }
 });
 
 // Handle notification clicks
 chrome.notifications.onClicked.addListener((notificationId) => {
-  // Open extension popup or main app
+  // Open main app dashboard
   chrome.tabs.create({
     url: 'http://localhost:3000/dashboard'
   });
 });
 
-console.log('Meeting Intelligence: Background script initialization complete');
+console.log('✅ Background service worker initialized (MV3 compatible)');

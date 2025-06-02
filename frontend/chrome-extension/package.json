@@ -8,8 +8,10 @@
     "dev": "webpack --mode development --watch",
     "clean": "rm -rf dist",
     "package": "npm run clean && npm run build && cd dist && zip -r ../meeting-intelligence-extension.zip .",
-    "lint": "eslint src --ext .js,.jsx",
-    "lint:fix": "eslint src --ext .js,.jsx --fix"
+    "lint": "eslint src public --ext .js,.jsx",
+    "lint:fix": "eslint src public --ext .js,.jsx --fix",
+    "test": "jest",
+    "start": "npm run dev"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -29,11 +31,16 @@
     "mini-css-extract-plugin": "^2.7.6",
     "style-loader": "^3.3.3",
     "webpack": "^5.88.0",
-    "webpack-cli": "^5.1.4"
+    "webpack-cli": "^5.1.4",
+    "jest": "^29.7.0"
   },
   "babel": {
     "presets": [
-      "@babel/preset-env",
+      ["@babel/preset-env", {
+        "targets": {
+          "chrome": "110"
+        }
+      }],
       "@babel/preset-react"
     ]
   },
@@ -77,13 +84,5 @@
     "meeting-analysis"
   ],
   "author": "Meeting Intelligence Team",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/your-org/meeting-intelligence-extension.git"
-  },
-  "bugs": {
-    "url": "https://github.com/your-org/meeting-intelligence-extension/issues"
-  },
-  "homepage": "https://meetingintelligence.ai"
+  "license": "MIT"
 }
