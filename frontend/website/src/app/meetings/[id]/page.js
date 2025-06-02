@@ -23,7 +23,8 @@ import {
   Mic,
   FileText,
   MessageSquare,
-  TrendingUp
+  TrendingUp,
+  AlertCircle
 } from 'lucide-react';
 
 import { useAuth } from '@/hooks/useAuth';
@@ -56,34 +57,69 @@ export default function MeetingDetailsPage({ params }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
+  const [error, setError] = useState(null);
 
   // Load meeting data
   useEffect(() => {
-    if (id) {
+    if (id && user) {
       loadMeetingData();
     }
-  }, [id]);
+  }, [id, user]);
 
   const loadMeetingData = async () => {
     setLoading(true);
+    setError(null);
+    
     try {
-      // Load all meeting data in parallel
-      const [meetingResponse, transcriptResponse, analysisResponse] = await Promise.all([
-        api.getMeeting(id),
-        api.getTranscript(id, { includeSegments: true }).catch(() => null),
-        api.getMeetingAnalysis(id).catch(() => null)
-      ]);
-
+      console.log('Loading meeting data for ID:', id);
+      
+      // Load meeting details
+      const meetingResponse = await api.getMeeting(id);
+      console.log('✅ Meeting data loaded:', meetingResponse);
       setMeeting(meetingResponse.meeting);
-      setTranscript(transcriptResponse);
-      setAnalysis(analysisResponse?.analysis?.[0] || null);
-      setActionItems(meetingResponse.actionItems || []);
+      
+      // Load transcript if available
+      try {
+        const transcriptResponse = await api.getTranscript(id, { includeSegments: true });
+        console.log('✅ Transcript loaded:', transcriptResponse);
+        setTranscript(transcriptResponse);
+      } catch (transcriptError) {
+        console.warn('⚠️ Transcript not available:', transcriptError.message);
+        setTranscript(null);
+      }
+      
+      // Load analysis if available
+      try {
+        const analysisResponse = await api.getMeetingAnalysis(id);
+        console.log('✅ Analysis loaded:', analysisResponse);
+        setAnalysis(analysisResponse.analysis?.[0] || null);
+      } catch (analysisError) {
+        console.warn('⚠️ Analysis not available:', analysisError.message);
+        setAnalysis(null);
+      }
+
+      // Load action items
+      try {
+        const actionItemsResponse = await api.getActionItems(id);
+        console.log('✅ Action items loaded:', actionItemsResponse);
+        setActionItems(actionItemsResponse.actionItems || []);
+      } catch (actionItemsError) {
+        console.warn('⚠️ Action items not available:', actionItemsError.message);
+        setActionItems([]);
+      }
+
+      // Set speakers from meeting data
       setSpeakers(meetingResponse.speakers || []);
 
     } catch (error) {
-      console.error('Failed to load meeting data:', error);
-      toast.error('Failed to load meeting details');
-      router.push('/meetings');
+      console.error('❌ Failed to load meeting data:', error);
+      setError(error.message);
+      
+      if (error.message.includes('404') || error.message.includes('not found')) {
+        toast.error('Meeting not found');
+      } else {
+        toast.error('Failed to load meeting details');
+      }
     } finally {
       setLoading(false);
     }
@@ -125,7 +161,7 @@ export default function MeetingDetailsPage({ params }) {
 
   const handleUpdateActionItem = async (itemId, updates) => {
     try {
-      const response = await api.updateActionItem(itemId, updates);
+      await api.updateActionItem(itemId, updates);
       setActionItems(prev => 
         prev.map(item => item.id === itemId ? { ...item, ...updates } : item)
       );
@@ -215,20 +251,34 @@ export default function MeetingDetailsPage({ params }) {
     );
   }
 
-  if (!meeting) {
+  if (error || !meeting) {
     return (
       <div className="min-h-screen bg-gray-50">
         <Navigation />
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="text-center">
-            <h1 className="text-2xl font-bold text-gray-900">Meeting not found</h1>
-            <p className="mt-2 text-gray-600">The meeting you're looking for doesn't exist.</p>
-            <button
-              onClick={() => router.push('/meetings')}
-              className="mt-4 btn-primary"
-            >
-              Back to Meetings
-            </button>
+            <AlertCircle className="mx-auto h-12 w-12 text-red-500 mb-4" />
+            <h1 className="text-2xl font-bold text-gray-900 mb-2">
+              {error?.includes('not found') ? 'Meeting not found' : 'Error loading meeting'}
+            </h1>
+            <p className="text-gray-600 mb-4">
+              {error || "The meeting you're looking for doesn't exist or couldn't be loaded."}
+            </p>
+            <div className="space-x-4">
+              <button
+                onClick={() => router.back()}
+                className="btn-outline"
+              >
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Go Back
+              </button>
+              <button
+                onClick={() => router.push('/dashboard')}
+                className="btn-primary"
+              >
+                Dashboard
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -270,11 +320,13 @@ export default function MeetingDetailsPage({ params }) {
               </button>
               
               <div className="relative">
-                <button className="btn-outline flex items-center space-x-1">
+                <button 
+                  onClick={() => handleExportTranscript('txt')}
+                  className="btn-outline flex items-center space-x-1"
+                >
                   <Download className="h-4 w-4" />
                   <span>Export</span>
                 </button>
-                {/* Export dropdown would go here */}
               </div>
               
               <button className="btn-ghost p-2">
@@ -554,7 +606,7 @@ export default function MeetingDetailsPage({ params }) {
                 <button
                   onClick={() => {
                     // TODO: Open action item creation modal
-                    console.log('Create action item');
+                    toast.info('Action item creation coming soon!');
                   }}
                   className="btn-primary text-sm flex items-center space-x-1"
                 >

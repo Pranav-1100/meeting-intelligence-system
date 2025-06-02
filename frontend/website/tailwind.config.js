@@ -2,10 +2,10 @@
 module.exports = {
     darkMode: ['class'],
     content: [
-      './pages/**/*.{js,jsx}',
-      './components/**/*.{js,jsx}',
-      './app/**/*.{js,jsx}',
-      './src/**/*.{js,jsx}',
+      './pages/**/*.{js,ts,jsx,tsx,mdx}',
+      './components/**/*.{js,ts,jsx,tsx,mdx}',
+      './app/**/*.{js,ts,jsx,tsx,mdx}',
+      './src/**/*.{js,ts,jsx,tsx,mdx}',
     ],
     theme: {
       container: {
@@ -58,12 +58,12 @@ module.exports = {
         },
         keyframes: {
           'accordion-down': {
-            from: { height: 0 },
+            from: { height: '0' },
             to: { height: 'var(--radix-accordion-content-height)' },
           },
           'accordion-up': {
             from: { height: 'var(--radix-accordion-content-height)' },
-            to: { height: 0 },
+            to: { height: '0' },
           },
           'slide-in-right': {
             '0%': {
@@ -172,10 +172,8 @@ module.exports = {
       },
     },
     plugins: [
-      require('@tailwindcss/forms')({
-        strategy: 'class',
-      }),
+      require('@tailwindcss/forms'),
       require('@tailwindcss/typography'),
       require('@tailwindcss/aspect-ratio'),
     ],
-  }
+  };

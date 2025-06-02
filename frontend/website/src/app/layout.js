@@ -45,7 +45,7 @@ export default function RootLayout({ children }) {
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
       </head>
-      <body className={`${inter.className} bg-gray-50 text-gray-900 antialiased`}>
+      <body className={`${inter.className} min-h-screen bg-gray-50 text-gray-900 antialiased`}>
         <AuthProvider>
           <ToastProvider>
             <div className="min-h-screen flex flex-col">

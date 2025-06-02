@@ -35,14 +35,31 @@ class ApiClient {
       ...options,
     };
 
-    const response = await fetch(`${this.baseURL}${endpoint}`, config);
-    
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ message: 'Unknown error' }));
-      throw new Error(errorData.message || `API Error: ${response.status}`);
+    console.log(`🌐 API Request: ${config.method || 'GET'} ${this.baseURL}${endpoint}`);
+
+    try {
+      const response = await fetch(`${this.baseURL}${endpoint}`, config);
+      
+      console.log(`📡 API Response: ${response.status} ${response.statusText}`);
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ 
+          message: `HTTP ${response.status}: ${response.statusText}` 
+        }));
+        
+        const errorMessage = errorData.message || errorData.error || `API Error: ${response.status}`;
+        console.error(`❌ API Error:`, errorMessage);
+        throw new Error(errorMessage);
+      }
+      
+      const data = await response.json();
+      console.log(`✅ API Success:`, data);
+      return data;
+      
+    } catch (error) {
+      console.error(`❌ API Request Failed:`, error);
+      throw error;
     }
-    
-    return response.json();
   }
 
   // ==========================================
@@ -97,6 +114,16 @@ class ApiClient {
     return this.request(`/api/auth/usage?period=${period}`);
   }
 
+  /**
+   * Delete account
+   */
+  async deleteAccount(confirmData) {
+    return this.request('/api/auth/delete', {
+      method: 'DELETE',
+      body: JSON.stringify(confirmData),
+    });
+  }
+
   // ==========================================
   // MEETING ENDPOINTS
   // ==========================================
@@ -122,6 +149,8 @@ class ApiClient {
   async uploadAudio(formData) {
     const token = await this.getAuthToken();
     
+    console.log(`🌐 API Upload: POST ${this.baseURL}/api/meetings/upload`);
+    
     const response = await fetch(`${this.baseURL}/api/meetings/upload`, {
       method: 'POST',
       headers: {
@@ -130,12 +159,17 @@ class ApiClient {
       body: formData,
     });
 
+    console.log(`📡 Upload Response: ${response.status} ${response.statusText}`);
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ message: 'Upload failed' }));
+      console.error(`❌ Upload Error:`, errorData);
       throw new Error(errorData.message || `Upload Error: ${response.status}`);
     }
 
-    return response.json();
+    const data = await response.json();
+    console.log(`✅ Upload Success:`, data);
+    return data;
   }
 
   /**
@@ -186,16 +220,22 @@ class ApiClient {
     const token = await this.getAuthToken();
     const params = new URLSearchParams({ format, ...options }).toString();
     
+    console.log(`🌐 API Export: GET ${this.baseURL}/api/transcription/${meetingId}/export?${params}`);
+    
     const response = await fetch(`${this.baseURL}/api/transcription/${meetingId}/export?${params}`, {
       headers: {
         ...(token && { 'Authorization': `Bearer ${token}` }),
       },
     });
 
+    console.log(`📡 Export Response: ${response.status} ${response.statusText}`);
+
     if (!response.ok) {
+      console.error(`❌ Export Error: ${response.status}`);
       throw new Error(`Export failed: ${response.status}`);
     }
 
+    console.log(`✅ Export Success`);
     return response.blob();
   }
 
@@ -305,6 +345,17 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify(slackData),
     });
+  }
+
+  // ==========================================
+  // HEALTH CHECK
+  // ==========================================
+
+  /**
+   * Check backend health
+   */
+  async healthCheck() {
+    return this.request('/health');
   }
 }
 

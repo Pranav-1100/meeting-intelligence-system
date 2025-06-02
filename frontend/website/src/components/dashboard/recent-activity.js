@@ -30,60 +30,91 @@ export default function RecentActivity() {
     try {
       setLoading(true);
       
-      // Get recent meetings
-      const meetingsResponse = await api.getMeetings({
-        page: 1,
-        limit: 5,
-        sortBy: 'created_at',
-        sortOrder: 'DESC'
-      });
-
-      // Get recent action items  
-      const actionItemsPromises = meetingsResponse.meetings?.map(meeting => 
-        api.getActionItems(meeting.id, { limit: 3 }).catch(() => ({ actionItems: [] }))
-      ) || [];
-
-      const actionItemsResponses = await Promise.all(actionItemsPromises);
+      console.log('Loading recent activity from API...');
       
-      // Combine and format activities
-      const meetingActivities = meetingsResponse.meetings?.map(meeting => ({
-        id: `meeting-${meeting.id}`,
-        type: 'meeting',
-        title: meeting.title || 'Untitled Meeting',
-        description: `${meeting.meeting_type} meeting`,
-        timestamp: meeting.created_at,
-        metadata: {
-          status: meeting.processing_status,
-          duration: meeting.audio_duration,
-          participants: meeting.participants_count
-        }
-      })) || [];
-
-      const actionItemActivities = actionItemsResponses.flatMap((response, index) => 
-        response.actionItems?.slice(0, 2).map(item => ({
-          id: `action-${item.id}`,
-          type: 'action_item',
-          title: item.title,
-          description: `Action item ${item.status === 'completed' ? 'completed' : 'created'}`,
-          timestamp: item.created_at || item.updated_at,
+      // Get recent meetings from API
+      let meetingActivities = [];
+      try {
+        const meetingsResponse = await api.getMeetings({
+          page: 1,
+          limit: 10,
+          sortBy: 'created_at',
+          sortOrder: 'DESC'
+        });
+        
+        console.log('✅ Recent meetings loaded:', meetingsResponse);
+        
+        // Convert meetings to activity format
+        meetingActivities = (meetingsResponse.meetings || []).slice(0, 5).map(meeting => ({
+          id: `meeting-${meeting.id}`,
+          type: 'meeting',
+          title: meeting.title || 'Untitled Meeting',
+          description: `${meeting.meeting_type} meeting ${meeting.processing_status}`,
+          timestamp: meeting.created_at,
           metadata: {
-            status: item.status,
-            priority: item.priority,
-            assignee: item.assignee_name,
-            meetingTitle: meetingsResponse.meetings[index]?.title
+            status: meeting.processing_status,
+            duration: meeting.audio_duration,
+            participants: meeting.participants_count || 0,
+            platform: meeting.platform
           }
-        })) || []
-      );
+        }));
+        
+      } catch (error) {
+        console.error('Failed to load meetings for activity:', error);
+      }
+
+      // Get recent action items from the meetings
+      let actionItemActivities = [];
+      try {
+        // Get action items from the first few meetings
+        const actionItemPromises = meetingActivities.slice(0, 3).map(async (activity) => {
+          try {
+            const meetingId = activity.id.replace('meeting-', '');
+            const actionItemsResponse = await api.getActionItems(meetingId);
+            
+            return (actionItemsResponse.actionItems || []).slice(0, 2).map(item => ({
+              id: `action-${item.id}`,
+              type: 'action_item',
+              title: item.title || item.description || 'Action Item',
+              description: `Action item ${item.status === 'completed' ? 'completed' : 'created'}`,
+              timestamp: item.created_at || item.updated_at || activity.timestamp,
+              metadata: {
+                status: item.status,
+                priority: item.priority,
+                assignee: item.assignee_name,
+                meetingTitle: activity.title
+              }
+            }));
+          } catch (error) {
+            console.warn('Failed to load action items for meeting:', error);
+            return [];
+          }
+        });
+
+        const actionItemArrays = await Promise.all(actionItemPromises);
+        actionItemActivities = actionItemArrays.flat();
+        
+      } catch (error) {
+        console.error('Failed to load action items for activity:', error);
+      }
 
       // Combine and sort all activities
       const allActivities = [...meetingActivities, ...actionItemActivities]
         .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
         .slice(0, 8);
 
+      console.log('✅ Recent activity loaded:', allActivities);
       setActivities(allActivities);
+      
+      if (allActivities.length === 0) {
+        // Fallback to mock data if no real data available
+        setActivities(getMockActivities());
+      }
+      
     } catch (error) {
       console.error('Failed to load recent activity:', error);
-      // Create mock data for demo purposes
+      
+      // Fallback to mock data
       setActivities(getMockActivities());
     } finally {
       setLoading(false);
@@ -106,26 +137,10 @@ export default function RecentActivity() {
     {
       id: 'mock-1',
       type: 'meeting',
-      title: 'Weekly Team Standup',
-      description: 'realtime meeting',
-      timestamp: new Date(Date.now() - 1000 * 60 * 30).toISOString(), // 30 minutes ago
-      metadata: { status: 'completed', duration: 1560, participants: 4 }
-    },
-    {
-      id: 'mock-2',
-      type: 'action_item',
-      title: 'Review API documentation',
-      description: 'Action item created',
-      timestamp: new Date(Date.now() - 1000 * 60 * 45).toISOString(), // 45 minutes ago
-      metadata: { status: 'pending', priority: 'high', assignee: 'John Doe' }
-    },
-    {
-      id: 'mock-3',
-      type: 'meeting',
-      title: 'Product Planning Session',
-      description: 'uploaded meeting',
-      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString(), // 2 hours ago
-      metadata: { status: 'processing', duration: 3600, participants: 6 }
+      title: 'No recent meetings found',
+      description: 'Upload or record your first meeting',
+      timestamp: new Date().toISOString(),
+      metadata: { status: 'pending', duration: 0, participants: 0 }
     }
   ];
 
@@ -221,16 +236,22 @@ export default function RecentActivity() {
                   {/* Activity-specific metadata */}
                   {activity.type === 'meeting' && activity.metadata && (
                     <div className="flex items-center space-x-3 mt-2 text-xs text-gray-500">
-                      {activity.metadata.duration && (
+                      {activity.metadata.duration > 0 && (
                         <span>{Math.round(activity.metadata.duration / 60)} min</span>
                       )}
-                      {activity.metadata.participants && (
+                      {activity.metadata.participants > 0 && (
                         <span>{activity.metadata.participants} participants</span>
                       )}
                       {activity.metadata.status && (
-                        <span className={`badge-${activity.metadata.status === 'completed' ? 'success' : activity.metadata.status === 'failed' ? 'error' : 'info'}`}>
+                        <span className={`badge-${
+                          activity.metadata.status === 'completed' ? 'success' : 
+                          activity.metadata.status === 'failed' ? 'error' : 'info'
+                        }`}>
                           {activity.metadata.status}
                         </span>
+                      )}
+                      {activity.metadata.platform && (
+                        <span>{activity.metadata.platform}</span>
                       )}
                     </div>
                   )}
@@ -241,7 +262,10 @@ export default function RecentActivity() {
                         <span>@{activity.metadata.assignee}</span>
                       )}
                       {activity.metadata.priority && (
-                        <span className={`badge-${activity.metadata.priority === 'high' ? 'error' : activity.metadata.priority === 'medium' ? 'warning' : 'neutral'}`}>
+                        <span className={`badge-${
+                          activity.metadata.priority === 'high' ? 'error' : 
+                          activity.metadata.priority === 'medium' ? 'warning' : 'neutral'
+                        }`}>
                           {activity.metadata.priority}
                         </span>
                       )}

@@ -33,7 +33,7 @@ import RecentActivity from '@/components/dashboard/recent-activity';
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, error: authError } = useAuth();
   const { 
     isConnected, 
     isRecording, 
@@ -53,6 +53,7 @@ export default function DashboardPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState('all');
   const [showRealtimePanel, setShowRealtimePanel] = useState(false);
+  const [backendConnected, setBackendConnected] = useState(false);
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -75,6 +76,13 @@ export default function DashboardPage() {
     }
   }, [wsError, toast]);
 
+  // Show auth errors (but don't treat backend fallback as error)
+  useEffect(() => {
+    if (authError && !authError.includes('Backend connection failed')) {
+      toast.error(authError);
+    }
+  }, [authError, toast]);
+
   // Show realtime panel when recording starts
   useEffect(() => {
     if (isRecording) {
@@ -84,23 +92,68 @@ export default function DashboardPage() {
 
   const loadDashboardData = async () => {
     setLoading(true);
+    let backendWorking = false;
+    
     try {
-      // Load recent meetings
-      const meetingsResponse = await api.getMeetings({
-        page: 1,
-        limit: 10,
-        sortBy: 'created_at',
-        sortOrder: 'DESC'
-      });
-      setMeetings(meetingsResponse.meetings || []);
+      console.log('Loading dashboard data from backend...');
+      
+      // Try to load recent meetings
+      try {
+        const meetingsResponse = await api.getMeetings({
+          page: 1,
+          limit: 10,
+          sortBy: 'created_at',
+          sortOrder: 'DESC'
+        });
+        
+        console.log('✅ Backend meetings response:', meetingsResponse);
+        setMeetings(meetingsResponse.meetings || []);
+        backendWorking = true;
+        
+      } catch (error) {
+        console.error('❌ Backend meetings failed:', error);
+        // Use empty array if backend fails
+        setMeetings([]);
+      }
 
-      // Load user stats
-      const statsResponse = await api.getUserUsage(30);
-      setStats(statsResponse.usage || null);
+      // Try to load user stats
+      try {
+        const statsResponse = await api.getUserUsage(30);
+        console.log('✅ Backend stats response:', statsResponse);
+        setStats(statsResponse.usage || null);
+        backendWorking = true;
+        
+      } catch (error) {
+        console.error('❌ Backend stats failed:', error);
+        // Use mock stats if backend fails
+        setStats({
+          meetings_count: 0,
+          total_audio_duration: 0,
+          avg_meeting_duration: 0,
+          action_items_count: 0,
+          total_words_transcribed: 0
+        });
+      }
+
+      setBackendConnected(backendWorking);
+      
+      if (backendWorking) {
+        console.log('✅ Backend fully operational');
+      } else {
+        console.log('⚠️ Backend not responding, using fallback data');
+      }
 
     } catch (error) {
       console.error('Failed to load dashboard data:', error);
-      toast.error('Failed to load dashboard data');
+      setBackendConnected(false);
+      setMeetings([]);
+      setStats({
+        meetings_count: 0,
+        total_audio_duration: 0,
+        avg_meeting_duration: 0,
+        action_items_count: 0,
+        total_words_transcribed: 0
+      });
     } finally {
       setLoading(false);
     }
@@ -155,7 +208,10 @@ export default function DashboardPage() {
   if (authLoading || !user) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
       </div>
     );
   }
@@ -181,7 +237,14 @@ export default function DashboardPage() {
             <div className="flex items-center space-x-2">
               <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
               <span className="text-sm text-gray-600">
-                {isConnected ? 'Connected' : 'Disconnected'}
+                WebSocket: {isConnected ? 'Connected' : 'Disconnected'}
+              </span>
+            </div>
+            
+            <div className="flex items-center space-x-2">
+              <div className={`w-2 h-2 rounded-full ${backendConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <span className="text-sm text-gray-600">
+                Backend API: {backendConnected ? 'Connected' : 'Disconnected'}
               </span>
             </div>
             
@@ -193,6 +256,25 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
+
+        {/* Backend Warning */}
+        {!backendConnected && (
+          <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                <TrendingUp className="h-5 w-5 text-red-600" />
+              </div>
+              <div className="ml-3">
+                <h3 className="text-sm font-medium text-red-900">
+                  Backend Disconnected
+                </h3>
+                <p className="text-sm text-red-700 mt-1">
+                  Cannot connect to backend API at http://localhost:8000. Please check if your server is running.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Stats Cards */}
         {stats && (
@@ -304,10 +386,12 @@ export default function DashboardPage() {
                     <p className="mt-1 text-sm text-gray-500">
                       {searchQuery || filter !== 'all' 
                         ? 'Try adjusting your search or filter criteria'
-                        : 'Get started by uploading an audio file or recording a live meeting'
+                        : backendConnected 
+                          ? 'Get started by uploading an audio file or recording a live meeting'
+                          : 'Connect to backend to view your meetings'
                       }
                     </p>
-                    {!searchQuery && filter === 'all' && (
+                    {!searchQuery && filter === 'all' && backendConnected && (
                       <div className="mt-6">
                         <button
                           onClick={handleUploadClick}

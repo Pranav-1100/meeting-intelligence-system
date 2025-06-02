@@ -21,14 +21,40 @@ export function AuthProvider({ children }) {
 
       try {
         if (firebaseUser) {
+          console.log('Firebase user authenticated:', firebaseUser.email);
+          
           // Verify with backend and get user data
-          const response = await api.verifyAuth();
-          setUser(response.user);
+          try {
+            const response = await api.verifyAuth();
+            console.log('Backend verification successful:', response.user);
+            setUser(response.user);
+          } catch (apiError) {
+            console.error('Backend verification failed:', apiError);
+            
+            // If backend verification fails, still create a user object from Firebase
+            // This allows the app to work even if backend is temporarily unavailable
+            const fallbackUser = {
+              uid: firebaseUser.uid,
+              email: firebaseUser.email,
+              display_name: firebaseUser.displayName || firebaseUser.email?.split('@')[0],
+              photo_url: firebaseUser.photoURL,
+              provider: firebaseUser.providerData[0]?.providerId || 'email',
+              created_at: firebaseUser.metadata?.creationTime,
+              last_login: firebaseUser.metadata?.lastSignInTime,
+              subscription_tier: 'free',
+              email_verified: firebaseUser.emailVerified
+            };
+            
+            console.log('Using fallback user data:', fallbackUser);
+            setUser(fallbackUser);
+            setError('Backend connection failed, using limited functionality');
+          }
         } else {
+          console.log('User signed out');
           setUser(null);
         }
       } catch (error) {
-        console.error('Auth verification failed:', error);
+        console.error('Auth state change error:', error);
         setError(error.message);
         setUser(null);
       } finally {
@@ -44,6 +70,7 @@ export function AuthProvider({ children }) {
       setLoading(true);
       await logout();
       setUser(null);
+      setError(null);
     } catch (error) {
       console.error('Sign out failed:', error);
       setError(error.message);
