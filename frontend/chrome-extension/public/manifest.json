@@ -1,0 +1,107 @@
+{
+    "manifest_version": 3,
+    "name": "Meeting Intelligence - AI Meeting Assistant",
+    "version": "1.0.0",
+    "description": "Capture and analyze meeting audio with AI-powered transcription and action item extraction",
+    
+    "permissions": [
+      "tabCapture",
+      "activeTab",
+      "storage",
+      "background",
+      "notifications",
+      "scripting"
+    ],
+    
+    "host_permissions": [
+      "*://meet.google.com/*",
+      "*://*.zoom.us/*",
+      "*://teams.microsoft.com/*",
+      "*://*.webex.com/*",
+      "*://localhost:8000/*",
+      "http://localhost:3000/*"
+    ],
+  
+    "background": {
+      "service_worker": "background.js",
+      "type": "module"
+    },
+  
+    "content_scripts": [
+      {
+        "matches": [
+          "*://meet.google.com/*",
+          "*://*.zoom.us/*", 
+          "*://teams.microsoft.com/*",
+          "*://*.webex.com/*"
+        ],
+        "js": ["content.js"],
+        "css": ["content.css"],
+        "run_at": "document_end"
+      }
+    ],
+  
+    "action": {
+      "default_popup": "popup.html",
+      "default_title": "Meeting Intelligence",
+      "default_icon": {
+        "16": "icons/icon16.png",
+        "32": "icons/icon32.png",
+        "48": "icons/icon48.png",
+        "128": "icons/icon128.png"
+      }
+    },
+  
+    "icons": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+  
+    "web_accessible_resources": [
+      {
+        "resources": [
+          "overlay.html",
+          "overlay.css",
+          "overlay.js",
+          "icons/*"
+        ],
+        "matches": [
+          "*://meet.google.com/*",
+          "*://*.zoom.us/*",
+          "*://teams.microsoft.com/*",
+          "*://*.webex.com/*"
+        ]
+      }
+    ],
+  
+    "content_security_policy": {
+      "extension_pages": "script-src 'self'; object-src 'self';"
+    },
+  
+    "commands": {
+      "start-recording": {
+        "suggested_key": {
+          "default": "Ctrl+Shift+R",
+          "mac": "Command+Shift+R"
+        },
+        "description": "Start meeting recording"
+      },
+      "stop-recording": {
+        "suggested_key": {
+          "default": "Ctrl+Shift+S",
+          "mac": "Command+Shift+S"
+        },
+        "description": "Stop meeting recording"
+      }
+    },
+  
+    "author": {
+      "email": "support@meetingintelligence.ai"
+    },
+  
+    "homepage_url": "https://meetingintelligence.ai",
+  
+    "minimum_chrome_version": "110"
+  }
