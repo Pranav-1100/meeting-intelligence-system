@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Meeting Intelligence Extension Diagnostic</title>
+    <style>
+        body { 
+            font-family: monospace; 
+            padding: 20px; 
+            background: #f5f5f5; 
+        }
+        .test { 
+            background: white; 
+            padding: 15px; 
+            margin: 10px 0; 
+            border-radius: 5px; 
+            border-left: 4px solid #ccc; 
+        }
+        .pass { border-left-color: #4CAF50; }
+        .fail { border-left-color: #f44336; }
+        .warn { border-left-color: #ff9800; }
+        button { 
+            background: #2196F3; 
+            color: white; 
+            border: none; 
+            padding: 10px 20px; 
+            border-radius: 5px; 
+            cursor: pointer; 
+            margin: 5px; 
+        }
+        button:hover { background: #1976D2; }
+        .output { 
+            background: #263238; 
+            color: #4CAF50; 
+            padding: 15px; 
+            border-radius: 5px; 
+            margin: 10px 0; 
+            font-family: 'Courier New', monospace; 
+            white-space: pre-wrap; 
+        }
+    </style>
+</head>
+<body>
+    <h1>🔧 Meeting Intelligence Extension Diagnostic</h1>
+    <p>This page will help diagnose why your Chrome extension isn't working.</p>
+    
+    <button onclick="runAllTests()">🧪 Run All Tests</button>
+    <button onclick="testTabCapture()">🎤 Test TabCapture API</button>
+    <button onclick="checkExtension()">🔍 Check Extension Status</button>
+    <button onclick="clearOutput()">🗑️ Clear Output</button>
+    
+    <div id="output" class="output">Click "Run All Tests" to start diagnosis...\n</div>
+
+    <script>
+        let output = document.getElementById('output');
+        
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const prefix = type === 'error' ? '❌' : type === 'warn' ? '⚠️' : type === 'success' ? '✅' : 'ℹ️';
+            output.textContent += `[${timestamp}] ${prefix} ${message}\n`;
+            output.scrollTop = output.scrollHeight;
+        }
+        
+        function clearOutput() {
+            output.textContent = '';
+        }
+        
+        async function runAllTests() {
+            clearOutput();
+            log('Starting diagnostic tests...', 'info');
+            
+            await checkChrome();
+            await checkExtension();
+            await checkTabCapture();
+            await checkPermissions();
+            await testBackendConnection();
+            
+            log('Diagnostic complete!', 'success');
+        }
+        
+        async function checkChrome() {
+            log('Checking Chrome version...', 'info');
+            
+            if (typeof chrome === 'undefined') {
+                log('Chrome APIs not available - not running in Chrome extension context', 'error');
+                return false;
+            }
+            
+            // Get Chrome version from user agent
+            const match = navigator.userAgent.match(/Chrome\/(\d+)/);
+            if (match) {
+                const version = parseInt(match[1]);
+                if (version >= 110) {
+                    log(`Chrome version ${version} - OK`, 'success');
+                } else {
+                    log(`Chrome version ${version} - Too old! Need 110+`, 'error');
+                }
+            } else {
+                log('Could not detect Chrome version', 'warn');
+            }
+            
+            return true;
+        }
+        
+        async function checkExtension() {
+            log('Checking extension context...', 'info');
+            
+            if (typeof chrome === 'undefined') {
+                log('Not running in Chrome extension context', 'error');
+                return false;
+            }
+            
+            if (chrome.runtime) {
+                log(`Extension ID: ${chrome.runtime.id}`, 'success');
+            } else {
+                log('chrome.runtime not available', 'error');
+                return false;
+            }
+            
+            return true;
+        }
+        
+        async function checkTabCapture() {
+            log('Checking tabCapture API...', 'info');
+            
+            if (typeof chrome === 'undefined') {
+                log('Chrome APIs not available', 'error');
+                return false;
+            }
+            
+            if (!chrome.tabCapture) {
+                log('chrome.tabCapture not available - missing permission or API not supported', 'error');
+                return false;
+            }
+            
+            log('chrome.tabCapture object exists', 'success');
+            
+            if (typeof chrome.tabCapture.capture !== 'function') {
+                log('chrome.tabCapture.capture function not available', 'error');
+                return false;
+            }
+            
+            log('chrome.tabCapture.capture function exists', 'success');
+            
+            // Test if we can call the function (will fail but shouldn't throw)
+            try {
+                chrome.tabCapture.capture({ audio: true }, (stream) => {
+                    if (chrome.runtime.lastError) {
+                        log(`tabCapture test error (expected): ${chrome.runtime.lastError.message}`, 'info');
+                    } else if (stream) {
+                        log('tabCapture test succeeded unexpectedly - this means it works!', 'success');
+                        stream.getTracks().forEach(track => track.stop());
+                    }
+                });
+                log('tabCapture.capture callable', 'success');
+            } catch (error) {
+                log(`tabCapture.capture threw exception: ${error.message}`, 'error');
+                return false;
+            }
+            
+            return true;
+        }
+        
+        async function checkPermissions() {
+            log('Checking extension permissions...', 'info');
+            
+            if (!chrome.permissions) {
+                log('chrome.permissions API not available', 'warn');
+                return false;
+            }
+            
+            try {
+                const permissions = await chrome.permissions.getAll();
+                log(`Current permissions: ${JSON.stringify(permissions, null, 2)}`, 'info');
+                
+                if (permissions.permissions.includes('tabCapture')) {
+                    log('tabCapture permission granted', 'success');
+                } else {
+                    log('tabCapture permission NOT granted', 'error');
+                }
+                
+                return true;
+            } catch (error) {
+                log(`Error checking permissions: ${error.message}`, 'error');
+                return false;
+            }
+        }
+        
+        async function testBackendConnection() {
+            log('Testing backend connection...', 'info');
+            
+            try {
+                const response = await fetch('http://localhost:8000/health');
+                if (response.ok) {
+                    const data = await response.json();
+                    log(`Backend connected: ${JSON.stringify(data)}`, 'success');
+                } else {
+                    log(`Backend responded with status: ${response.status}`, 'warn');
+                }
+            } catch (error) {
+                log(`Backend connection failed: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testTabCapture() {
+            log('Testing tabCapture functionality...', 'info');
+            
+            if (!chrome.tabCapture) {
+                log('tabCapture API not available', 'error');
+                return;
+            }
+            
+            // Get current tab
+            try {
+                const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+                if (tabs.length === 0) {
+                    log('No active tab found', 'error');
+                    return;
+                }
+                
+                const tab = tabs[0];
+                log(`Current tab: ${tab.title} (${tab.url})`, 'info');
+                
+                // Check if on meeting platform
+                const meetingPlatforms = ['meet.google.com', 'zoom.us', 'teams.microsoft.com', 'webex.com'];
+                const onMeetingPlatform = meetingPlatforms.some(platform => tab.url.includes(platform));
+                
+                if (!onMeetingPlatform) {
+                    log('Not on a meeting platform - this may cause tabCapture to fail', 'warn');
+                }
+                
+                // Try to capture
+                chrome.tabCapture.capture({ audio: true, video: false }, (stream) => {
+                    if (chrome.runtime.lastError) {
+                        log(`tabCapture failed: ${chrome.runtime.lastError.message}`, 'error');
+                        
+                        // Provide specific troubleshooting
+                        const error = chrome.runtime.lastError.message;
+                        if (error.includes('permission')) {
+                            log('Solution: Check extension permissions in chrome://extensions/', 'warn');
+                        } else if (error.includes('tab')) {
+                            log('Solution: Make sure you\'re on an active meeting page', 'warn');
+                        } else if (error.includes('audio')) {
+                            log('Solution: Ensure the meeting has active audio', 'warn');
+                        }
+                    } else if (stream) {
+                        log('🎉 tabCapture SUCCESS! Extension should work now.', 'success');
+                        log(`Stream details: ${stream.getAudioTracks().length} audio tracks, active: ${stream.active}`, 'info');
+                        
+                        // Stop the test stream
+                        stream.getTracks().forEach(track => track.stop());
+                    } else {
+                        log('tabCapture returned no stream and no error - unusual', 'warn');
+                    }
+                });
+                
+            } catch (error) {
+                log(`Error during tabCapture test: ${error.message}`, 'error');
+            }
+        }
+        
+        // Auto-run basic checks when page loads
+        window.addEventListener('load', () => {
+            setTimeout(() => {
+                log('Page loaded. Click "Run All Tests" for full diagnosis.', 'info');
+            }, 100);
+        });
+    </script>
+</body>
+</html>
